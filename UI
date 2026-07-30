@@ -1,0 +1,1374 @@
+--[[
+    NexaUI
+    Usage:
+        local NexaUI = loadstring(readfile("path/to/NexaUI.txt"))()
+        local Window = NexaUI:CreateWindow({
+            Name = "My Script",
+            Theme = {
+                Accent = Color3.fromRGB(180, 100, 200),
+                Font = Enum.Font.Gotham,
+                BreathingEffect = true,
+                NotificationPosition = "Top-Right",
+                UITransparency = 0,
+                UIScale = 100,
+            }
+        })
+        local Tab = Window:CreateTab({Name = "Main", Icon = "◆"})
+        local Section = Tab:CreateSection("SECTION NAME")
+        Tab:CreateToggle({Name = "My Toggle", Default = false, Callback = function(v) end})
+        Tab:CreateSlider({Name = "My Slider", Min = 0, Max = 100, Default = 50, Callback = function(v) end})
+        Tab:CreateButton({Name = "My Button", Callback = function() end})
+        Tab:CreateDropdown({Name = "My Dropdown", Options = {"A","B"}, Default = "A", Callback = function(v) end})
+        Tab:CreateLabel({Name = "My Label", Text = "Hello"})
+        Tab:CreateInput({Name = "My Input", PlaceholderText = "Type here", Callback = function(t) end})
+        NexaUI:SaveConfig("ConfigName")
+        NexaUI:LoadConfig("ConfigName")
+        NexaUI:Notify({Title = "Title", Content = "Content", Duration = 5})
+        NexaUI:Destroy()
+--]]
+
+local NexaUI = {}
+NexaUI.__index = NexaUI
+
+local RS = game:GetService("RunService")
+local PS = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TS = game:GetService("TweenService")
+local HS = game:GetService("HttpService")
+local plr = PS.LocalPlayer
+
+local COL_W_DEFAULT = 152
+local COL_GAP = 6
+local COL_H_MAX = 400
+local START_X = 230
+local START_Y = 70
+local HEADER_H = 32
+local MODULE_ROW_H = 28
+local SLIDER_ROW_H = 42
+local INPUT_ROW_H = 28
+local TOGGLE_W = 24
+local TOGGLE_H = 12
+local KNOB_SIZE = 10
+local KNOB_ON = 13
+local KNOB_OFF = 1
+local NOTIF_W = 320
+local NOTIF_H = 48
+
+local AccentPresets = {
+    Purple  = Color3.fromRGB(180, 100, 200),
+    Red     = Color3.fromRGB(230, 70, 90),
+    Blue    = Color3.fromRGB(80, 140, 230),
+    Green   = Color3.fromRGB(80, 220, 130),
+    Cyan    = Color3.fromRGB(80, 220, 220),
+    Pink    = Color3.fromRGB(240, 120, 200),
+    Gold    = Color3.fromRGB(240, 180, 60),
+    White   = Color3.fromRGB(230, 230, 240),
+}
+local AccentNames = {"Purple","Red","Blue","Green","Cyan","Pink","Gold","White"}
+
+local FontPresets = {
+    Gotham = Enum.Font.Gotham, Code = Enum.Font.Code,
+    RobotoMono = Enum.Font.RobotoMono, Ubuntu = Enum.Font.Ubuntu,
+    SourceSans = Enum.Font.SourceSans, Arcade = Enum.Font.Arcade,
+}
+local FontNames = {"Gotham","Code","RobotoMono","Ubuntu","SourceSans","Arcade"}
+local NotifPositions = {"Top-Right","Top-Left","Top-Center","Bottom-Right"}
+
+local KeyNameToCode = {}
+for _, kc in ipairs(Enum.KeyCode:GetEnumItems()) do
+    KeyNameToCode[kc.Name] = kc
+end
+
+local function Darken(c, f) return Color3.new(c.R*f, c.G*f, c.B*f) end
+local function Lighten(c, f)
+    return Color3.new(
+        math.min(c.R+(1-c.R)*f,1), math.min(c.G+(1-c.G)*f,1), math.min(c.B+(1-c.B)*f,1))
+end
+local function EnabledBg(accent)
+    local b = Color3.fromRGB(20,20,24)
+    return Color3.new(b.R*0.8+accent.R*0.2, b.G*0.8+accent.G*0.2, b.B*0.8+accent.B*0.2)
+end
+local function Cr(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,r or 4); c.Parent = p; return c end
+
+-- ============================================================
+-- CREATE WINDOW
+-- ============================================================
+function NexaUI:CreateWindow(config)
+    config = config or {}
+    local theme = config.Theme or {}
+    
+    local W = setmetatable({}, {__index = NexaUI})
+    
+    W.CurrentAccent = theme.Accent or AccentPresets.Purple
+    W.CurrentAccentName = "Purple"
+    if typeof(theme.Accent) == "string" and AccentPresets[theme.Accent] then
+        W.CurrentAccentName = theme.Accent
+        W.CurrentAccent = AccentPresets[theme.Accent]
+    end
+    W.CurrentFont = theme.Font or Enum.Font.Gotham
+    W.CurrentFontName = "Gotham"
+    for n,f in pairs(FontPresets) do if f == W.CurrentFont then W.CurrentFontName = n break end end
+    W.BreathingEnabled = theme.BreathingEffect or false
+    W.CurrentNotifPos = theme.NotificationPosition or "Top-Right"
+    W.UITransparencyVal = theme.UITransparency or 0
+    W.UIScaleVal = (theme.UIScale or 100) / 100
+    W.KeybindToggle = theme.Keybind or Enum.KeyCode.RightShift
+    if typeof(W.KeybindToggle) == "string" then
+        W.KeybindToggle = KeyNameToCode[W.KeybindToggle] or Enum.KeyCode.RightShift
+    end
+    W.UIOpen = false
+    W.ToggleAnimating = false
+    W.SavedPositions = {}
+    W.AllColumns = {}
+    W.ColumnScales = {}
+    W.ActiveNotifs = {}
+    W.Modules = {}
+    W.ConfigFolder = "NexaHub_Configs"
+    W._configName = "Default"
+    W.Keybinds = {}
+    W._connections = {}
+    W._currentColW = COL_W_DEFAULT
+    
+    W.UIStrokes = {}
+    W.TitleLabels = {}
+    W.ColumnIcons = {}
+    W.SliderFills = {}
+    W.SliderHandles = {}
+    W.ColFrames = {}
+    W.ColHeaders = {}
+    W.ColHeaderFills = {}
+    W.ModuleRows = {}
+    W.SliderRows = {}
+    W.InputFrames = {}
+    W.ParagraphFrames = {}
+    W.ParagraphTitles = {}
+    W.FontedElements = {}
+    W.AllModuleUI = {}
+    W.BreathingState = {Active = false, Connection = nil}
+    W.FadeState = {}
+    
+    -- ScreenGui
+    W.ScreenGui = Instance.new("ScreenGui")
+    W.ScreenGui.Name = "NexaHub_Yurei"
+    W.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    W.ScreenGui.ResetOnSpawn = false
+    W.ScreenGui.DisplayOrder = 999
+    local secureParent = pcall(function() return gethui() end) and gethui() or game:GetService("CoreGui")
+    if not secureParent then secureParent = plr:WaitForChild("PlayerGui") end
+    W.ScreenGui.IgnoreGuiInset = true
+    W.ScreenGui.Parent = secureParent
+    
+    -- Watermark
+    local wm = Instance.new("TextLabel")
+    wm.Name = "Watermark"; wm.AnchorPoint = Vector2.new(1,1)
+    wm.Position = UDim2.new(1,-12,1,-12); wm.Size = UDim2.new(0,180,0,22)
+    wm.BackgroundTransparency = 1;     local scriptName = config.Name or "Script"
+    wm.Text = "NexaUI • " .. scriptName
+    wm.TextColor3 = Color3.fromRGB(235,235,245); wm.TextTransparency = 0.45
+    wm.Font = Enum.Font.GothamMedium; wm.TextSize = 14
+    wm.TextXAlignment = Enum.TextXAlignment.Right
+    wm.ZIndex = 1000; wm.Parent = W.ScreenGui
+    local wms = Instance.new("UIStroke"); wms.Color = Color3.new(0,0,0); wms.Thickness = 1; wms.Transparency = 0.7; wms.Parent = wm
+    
+    -- Backdrop
+    W.Backdrop = Instance.new("Frame")
+    W.Backdrop.Name = "Backdrop"
+    W.Backdrop.Size = UDim2.new(1, 0, 1, 0)
+    W.Backdrop.Position = UDim2.new(0, 0, 0, 0)
+    W.Backdrop.BackgroundColor3 = Color3.new(0,0,0)
+    W.Backdrop.BackgroundTransparency = 1
+    W.Backdrop.BorderSizePixel = 0
+    W.Backdrop.ZIndex = 1
+    W.Backdrop.Visible = false
+    W.Backdrop.Parent = W.ScreenGui
+    
+    -- Context Menu
+    W.ContextMenu = Instance.new("Frame")
+    W.ContextMenu.Size = UDim2.new(0, 160, 0, 0)
+    W.ContextMenu.BackgroundColor3 = Color3.fromRGB(16, 16, 24)
+    W.ContextMenu.BorderSizePixel = 0
+    W.ContextMenu.Visible = false
+    W.ContextMenu.ZIndex = 500
+    W.ContextMenu.Parent = W.ScreenGui
+    Cr(W.ContextMenu, 6)
+    Instance.new("UIStroke", W.ContextMenu).Color = W.CurrentAccent
+    Instance.new("UIListLayout", W.ContextMenu).Padding = UDim.new(0, 2)
+    local cp = Instance.new("UIPadding", W.ContextMenu); cp.PaddingTop = UDim.new(0,4); cp.PaddingBottom = UDim.new(0,4)
+    
+    function W:HideContextMenu()
+        W.ContextMenu.Visible = false
+        for _,c in pairs(W.ContextMenu:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+        end
+    end
+    
+    function W:ShowContextMenu(options, position)
+        W:HideContextMenu()
+        for _,opt in ipairs(options) do
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1,-8,0,26); btn.Position = UDim2.new(0,4,0,0)
+            btn.BackgroundColor3 = Color3.fromRGB(24,24,36); btn.Text = "  "..opt.Label
+            btn.TextColor3 = opt.Color or Color3.fromRGB(200,200,200); btn.Font = W.CurrentFont
+            btn.TextSize = 10; btn.TextXAlignment = Enum.TextXAlignment.Left
+            btn.BorderSizePixel = 0; btn.AutoButtonColor = false; btn.ZIndex = 501
+            btn.Parent = W.ContextMenu; Cr(btn,3)
+            btn.MouseEnter:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(40,25,55) end)
+            btn.MouseLeave:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(24,24,36) end)
+            btn.MouseButton1Click:Connect(function()
+                W:HideContextMenu()
+                if opt.Callback then task.spawn(opt.Callback) end
+            end)
+        end
+        W.ContextMenu.Position = UDim2.new(0, position.X, 0, position.Y)
+        W.ContextMenu.Size = UDim2.new(0, 160, 0, #options * 28 + 8)
+        W.ContextMenu.Visible = true
+    end
+    
+    -- HUD
+    W.HUDFrame = Instance.new("Frame")
+    W.HUDFrame.Name = "HUD"; W.HUDFrame.Size = UDim2.new(0,200,0,0)
+    W.HUDFrame.AutomaticSize = Enum.AutomaticSize.Y
+    W.HUDFrame.Position = UDim2.new(0,10,0,70)
+    W.HUDFrame.BackgroundColor3 = Color3.fromRGB(12,12,18)
+    W.HUDFrame.BackgroundTransparency = 0.2
+    W.HUDFrame.BorderSizePixel = 0; W.HUDFrame.ZIndex = 100; W.HUDFrame.Parent = W.ScreenGui
+    Cr(W.HUDFrame, 6)
+    W.HUDScale = Instance.new("UIScale"); W.HUDScale.Scale = W.UIScaleVal; W.HUDScale.Parent = W.HUDFrame
+    local hb = Instance.new("UIStroke"); hb.Color = Color3.fromRGB(60,40,80); hb.Thickness = 1; hb.Parent = W.HUDFrame
+    table.insert(W.UIStrokes, hb)
+    local hp = Instance.new("UIPadding"); hp.PaddingTop = UDim.new(0,6); hp.PaddingLeft = UDim.new(0,8)
+    hp.PaddingRight = UDim.new(0,8); hp.PaddingBottom = UDim.new(0,6); hp.Parent = W.HUDFrame
+    Instance.new("UIListLayout", W.HUDFrame).Padding = UDim.new(0,2)
+    
+    W.HUDTitle = Instance.new("TextLabel")
+    W.HUDTitle.Size = UDim2.new(1,0,0,16); W.HUDTitle.BackgroundTransparency = 1
+    W.HUDTitle.Text = config.Name or "NexaUI"
+    W.HUDTitle.TextColor3 = W.CurrentAccent; W.HUDTitle.Font = W.CurrentFont
+    W.HUDTitle.TextSize = 11; W.HUDTitle.TextXAlignment = Enum.TextXAlignment.Left
+    W.HUDTitle.ZIndex = 101; W.HUDTitle.Parent = W.HUDFrame
+    table.insert(W.TitleLabels, W.HUDTitle); table.insert(W.FontedElements, W.HUDTitle)
+    
+    local hudSep = Instance.new("Frame"); hudSep.Size = UDim2.new(1,0,0,1)
+    hudSep.BackgroundColor3 = Color3.fromRGB(50,30,70); hudSep.BorderSizePixel = 0; hudSep.ZIndex = 101; hudSep.Parent = W.HUDFrame
+    
+    W.HUDList = Instance.new("Frame"); W.HUDList.Name = "HUDList"
+    W.HUDList.Size = UDim2.new(1,0,0,0); W.HUDList.AutomaticSize = Enum.AutomaticSize.Y
+    W.HUDList.BackgroundTransparency = 1; W.HUDList.ZIndex = 101; W.HUDList.Parent = W.HUDFrame
+    Instance.new("UIListLayout", W.HUDList).Padding = UDim.new(0,1)
+    
+    local hint = Instance.new("TextLabel"); hint.Size = UDim2.new(1,0,0,12)
+    hint.BackgroundTransparency = 1; hint.Text = "["..W.KeybindToggle.Name.."] Toggle UI"
+    hint.TextColor3 = Color3.fromRGB(80,80,100); hint.Font = W.CurrentFont
+    hint.TextSize = 9; hint.TextXAlignment = Enum.TextXAlignment.Left
+    hint.ZIndex = 101; hint.Parent = W.HUDFrame
+    table.insert(W.FontedElements, hint)
+    
+    W.NotifColors = {
+        info    = {bar = W.CurrentAccent, bg = Color3.fromRGB(18,22,36)},
+        success = {bar = Color3.fromRGB(80,220,130), bg = Color3.fromRGB(18,28,22)},
+        warning = {bar = Color3.fromRGB(220,180,60), bg = Color3.fromRGB(30,26,16)},
+        alert   = {bar = Color3.fromRGB(220,70,70), bg = Color3.fromRGB(30,16,16)},
+    }
+    
+    -- ============================================================
+    -- THEME FUNCTIONS
+    -- ============================================================
+    function W:ApplyAccentColor()
+        for _, tbl in pairs({W.UIStrokes, W.TitleLabels, W.ColumnIcons, W.SliderFills, W.SliderHandles}) do
+            for i = #tbl,1,-1 do if not tbl[i] or not tbl[i].Parent then table.remove(tbl,i) end end
+        end
+        pcall(function()
+            for _,s in ipairs(W.UIStrokes) do
+                if s and s.Parent then TS:Create(s,TweenInfo.new(0.2),{Color=W.CurrentAccent}):Play() end
+            end
+            if W.HUDTitle and W.HUDTitle.Parent then TS:Create(W.HUDTitle,TweenInfo.new(0.2),{TextColor3=W.CurrentAccent}):Play() end
+            for _,i in ipairs(W.ColumnIcons) do
+                if i and i.Parent then TS:Create(i,TweenInfo.new(0.2),{TextColor3=W.CurrentAccent}):Play() end
+            end
+            for _,l in ipairs(W.TitleLabels) do
+                if l and l.Parent then TS:Create(l,TweenInfo.new(0.2),{TextColor3=W.CurrentAccent}):Play() end
+            end
+            for _,t in ipairs(W.ParagraphTitles) do
+                if t and t.Parent then TS:Create(t,TweenInfo.new(0.2),{TextColor3=W.CurrentAccent}):Play() end
+            end
+            for _,f in ipairs(W.SliderFills) do
+                if f and f.Parent then TS:Create(f,TweenInfo.new(0.2),{BackgroundColor3=W.CurrentAccent}):Play() end
+            end
+            for _,h in ipairs(W.SliderHandles) do
+                if h and h.Parent then TS:Create(h,TweenInfo.new(0.2),{BackgroundColor3=W.CurrentAccent}):Play() end
+            end
+            W.NotifColors.info.bar = W.CurrentAccent
+            for i=#W.AllModuleUI,1,-1 do
+                local item = W.AllModuleUI[i]
+                if not item or not item.Row.Parent then table.remove(W.AllModuleUI,i) else item.Update() end
+            end
+        end)
+    end
+    
+    function W:ApplyFont()
+        for i=#W.FontedElements,1,-1 do
+            if not W.FontedElements[i] or not W.FontedElements[i].Parent then table.remove(W.FontedElements,i) end
+        end
+        pcall(function()
+            for _,el in ipairs(W.FontedElements) do
+                if el and el.Parent then el.Font = W.CurrentFont end
+            end
+        end)
+    end
+    
+    function W:ApplyUITransparency(t)
+        pcall(function()
+            for _,f in ipairs(W.ColFrames) do if f and f.Parent then f.BackgroundTransparency = t end end
+            for _,h in ipairs(W.ColHeaders) do if h and h.Parent then h.BackgroundTransparency = t end end
+            for _,hf in ipairs(W.ColHeaderFills) do if hf and hf.Parent then hf.BackgroundTransparency = t end end
+            for _,r in ipairs(W.ModuleRows) do if r and r.Parent then r.BackgroundTransparency = t end end
+            for _,r in ipairs(W.SliderRows) do if r and r.Parent then r.BackgroundTransparency = t end end
+            for _,f in ipairs(W.InputFrames) do if f and f.Parent then f.BackgroundTransparency = t end end
+            for _,f in ipairs(W.ParagraphFrames) do if f and f.Parent then f.BackgroundTransparency = t end end
+            if W.HUDFrame and W.HUDFrame.Parent then W.HUDFrame.BackgroundTransparency = t end
+        end)
+    end
+    
+    function W:StartBreathing()
+        if W.BreathingState.Active then return end
+        W.BreathingState.Active = true
+        W.BreathingState.Connection = task.spawn(function()
+            while W.BreathingState.Active do
+                for _,s in ipairs(W.UIStrokes) do
+                    if s and s.Parent then TS:Create(s,TweenInfo.new(1.5,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{Color=Darken(W.CurrentAccent,0.4)}):Play() end
+                end
+                task.wait(1.5)
+                if not W.BreathingState.Active then break end
+                for _,s in ipairs(W.UIStrokes) do
+                    if s and s.Parent then TS:Create(s,TweenInfo.new(1.5,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{Color=Lighten(W.CurrentAccent,0.3)}):Play() end
+                end
+                task.wait(1.5)
+            end
+        end)
+    end
+    
+    function W:StopBreathing()
+        W.BreathingState.Active = false
+        W.BreathingState.Connection = nil
+        W:ApplyAccentColor()
+    end
+    
+    -- ============================================================
+    -- TOGGLE UI
+    -- ============================================================
+    function W:ToggleUI()
+        if W.ToggleAnimating then return end
+        W.ToggleAnimating = true
+        W.UIOpen = not W.UIOpen
+        
+        local function initTransparencies(parent)
+            if parent:GetAttribute("OrigBg") == nil then parent:SetAttribute("OrigBg", parent.BackgroundTransparency) end
+            for _, d in ipairs(parent:GetDescendants()) do
+                if d:IsA("Frame") or d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                    if d:GetAttribute("OrigBg") == nil then d:SetAttribute("OrigBg", d.BackgroundTransparency) end
+                end
+                if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                    if d:GetAttribute("OrigTxt") == nil then d:SetAttribute("OrigTxt", d.TextTransparency) end
+                end
+                if d:IsA("UIStroke") then
+                    if d:GetAttribute("OrigStr") == nil then d:SetAttribute("OrigStr", d.Transparency) end
+                end
+            end
+        end
+
+        for _,col in pairs(W.AllColumns) do initTransparencies(col.Frame) end
+        initTransparencies(W.HUDFrame)
+        
+        local ft = W.UITransparencyVal / 100
+
+        if W.UIOpen then
+            W.ScreenGui.Enabled = true
+            W.Backdrop.Visible = true
+            TS:Create(W.Backdrop, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundTransparency=0.55}):Play()
+            
+            W.HUDFrame.Visible = true
+            TS:Create(W.HUDFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position=UDim2.new(0,10,0,70)}):Play()
+            
+            for _,col in pairs(W.AllColumns) do
+                col.Frame.Visible = true
+                local saved = W.SavedPositions[col.Frame.Name]
+                if saved then 
+                    col.Frame.Position = UDim2.new(saved.X.Scale, saved.X.Offset - (W._currentColW+40), saved.Y.Scale, saved.Y.Offset)
+                    TS:Create(col.Frame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position=saved}):Play()
+                end
+            end
+
+            local function fadeIn(parent)
+                local obg = parent:GetAttribute("OrigBg")
+                if obg then TS:Create(parent, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundTransparency = math.max(obg, ft)}):Play() end
+                
+                for _, d in ipairs(parent:GetDescendants()) do
+                    if d:IsA("Frame") or d:IsA("TextButton") or d:IsA("TextLabel") or d:IsA("TextBox") then
+                        local origBg = d:GetAttribute("OrigBg")
+                        if origBg then
+                            local targetBg = (origBg < 1) and math.max(origBg, ft) or 1
+                            TS:Create(d, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundTransparency=targetBg}):Play()
+                        end
+                    end
+                    if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                        local origTxt = d:GetAttribute("OrigTxt")
+                        if origTxt then TS:Create(d, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {TextTransparency=origTxt}):Play() end
+                    end
+                    if d:IsA("UIStroke") then
+                        local origStr = d:GetAttribute("OrigStr")
+                        if origStr then TS:Create(d, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Transparency=origStr}):Play() end
+                    end
+                end
+            end
+
+            for _,col in pairs(W.AllColumns) do fadeIn(col.Frame) end
+            fadeIn(W.HUDFrame)
+            
+            task.delay(0.45, function() W.ToggleAnimating = false end)
+        else
+            TS:Create(W.Backdrop, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {BackgroundTransparency=1}):Play()
+            TS:Create(W.HUDFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Position=UDim2.new(0,-210,0,70)}):Play()
+            
+            for _,col in pairs(W.AllColumns) do
+                local pos = col.Frame.Position
+                W.SavedPositions[col.Frame.Name] = pos
+                TS:Create(col.Frame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Position=UDim2.new(pos.X.Scale, pos.X.Offset-(W._currentColW+40), pos.Y.Scale, pos.Y.Offset)}):Play()
+            end
+
+            local function fadeOut(parent)
+                TS:Create(parent, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {BackgroundTransparency=1}):Play()
+                for _, d in ipairs(parent:GetDescendants()) do
+                    if d:IsA("Frame") or d:IsA("TextButton") or d:IsA("TextLabel") or d:IsA("TextBox") then
+                        TS:Create(d, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {BackgroundTransparency=1}):Play()
+                    end
+                    if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                        TS:Create(d, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {TextTransparency=1}):Play()
+                    end
+                    if d:IsA("UIStroke") then
+                        TS:Create(d, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Transparency=1}):Play()
+                    end
+                end
+            end
+
+            for _,col in pairs(W.AllColumns) do fadeOut(col.Frame) end
+            fadeOut(W.HUDFrame)
+            
+            task.delay(0.45, function()
+                if not W.UIOpen then
+                    W.ScreenGui.Enabled = false
+                    W.HUDFrame.Visible = false
+                    for _,col in pairs(W.AllColumns) do col.Frame.Visible = false end
+                    W.ToggleAnimating = false
+                end
+            end)
+        end
+    end
+    
+    -- ============================================================
+    -- NOTIFY
+    -- ============================================================
+    function W:Notify(opts)
+        if typeof(opts) == "string" then opts = {Title="NexaUI", Content=opts, Duration=4} end
+        opts.Title = opts.Title or "NexaUI"; opts.Content = opts.Content or ""
+        opts.Duration = opts.Duration or 4; opts.Type = opts.Type or "info"
+        pcall(function()
+            local colors = W.NotifColors[opts.Type] or W.NotifColors.info
+            local nc = 0; for _ in pairs(W.ActiveNotifs) do nc = nc + 1 end
+            local sP, eP, xP
+            if W.CurrentNotifPos == "Top-Right" then
+                sP = UDim2.new(1,350,0,50+nc*44); eP = UDim2.new(1,-330,0,50+nc*44); xP = UDim2.new(1,350,0,50+nc*44)
+            elseif W.CurrentNotifPos == "Top-Left" then
+                sP = UDim2.new(0,-350,0,50+nc*44); eP = UDim2.new(0,10,0,50+nc*44); xP = UDim2.new(0,-350,0,50+nc*44)
+            elseif W.CurrentNotifPos == "Top-Center" then
+                sP = UDim2.new(0.5,0,0,-60); eP = UDim2.new(0.5,0,0,20+nc*44); xP = UDim2.new(0.5,0,0,-60)
+            else
+                sP = UDim2.new(1,350,1,-60-nc*44); eP = UDim2.new(1,-330,1,-60-nc*44); xP = UDim2.new(1,350,1,-60-nc*44)
+            end
+            local fr = Instance.new("Frame"); fr.Size = UDim2.new(0,NOTIF_W,0,NOTIF_H)
+            fr.AnchorPoint = Vector2.new(0.5,0); fr.BackgroundColor3 = colors.bg
+            fr.BorderSizePixel = 0; fr.ZIndex = 900; fr.Parent = W.ScreenGui; Cr(fr,6)
+            Instance.new("UIStroke", fr).Color = colors.bar
+            local bar = Instance.new("Frame"); bar.Size = UDim2.new(0,3,1,-8); bar.Position = UDim2.new(0,4,0,4)
+            bar.BackgroundColor3 = colors.bar; bar.BorderSizePixel = 0; bar.ZIndex = 901; bar.Parent = fr; Cr(bar,2)
+            local tt = Instance.new("TextLabel"); tt.Size = UDim2.new(1,-20,0,18); tt.Position = UDim2.new(0,14,0,2)
+            tt.BackgroundTransparency = 1; tt.Text = opts.Title; tt.TextColor3 = Color3.fromRGB(220,220,220)
+            tt.Font = W.CurrentFont; tt.TextSize = 11; tt.TextXAlignment = Enum.TextXAlignment.Left
+            tt.ZIndex = 901; tt.Parent = fr; table.insert(W.FontedElements, tt)
+            local ct = Instance.new("TextLabel"); ct.Size = UDim2.new(1,-20,0,22); ct.Position = UDim2.new(0,14,0,20)
+            ct.BackgroundTransparency = 1; ct.Text = opts.Content; ct.TextColor3 = Color3.fromRGB(160,160,170)
+            ct.Font = W.CurrentFont; ct.TextSize = 9; ct.TextWrapped = true
+            ct.TextXAlignment = Enum.TextXAlignment.Left; ct.ZIndex = 901; ct.Parent = fr
+            table.insert(W.FontedElements, ct)
+            local id = #W.ActiveNotifs + 1; W.ActiveNotifs[id] = fr
+            fr.Position = sP
+            TS:Create(fr,TweenInfo.new(0.3,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Position=eP}):Play()
+            task.delay(opts.Duration, function()
+                if W.ActiveNotifs[id] then
+                    TS:Create(fr,TweenInfo.new(0.3,Enum.EasingStyle.Quart,Enum.EasingDirection.In),{Position=xP}):Play()
+                    task.delay(0.35, function()
+                        if fr then fr:Destroy() end; W.ActiveNotifs[id] = nil
+                        local idx = 0
+                        for _,f in pairs(W.ActiveNotifs) do
+                            idx = idx + 1
+                            local rp
+                            if W.CurrentNotifPos == "Top-Right" then rp = UDim2.new(1,-330,0,50+(idx-1)*44)
+                            elseif W.CurrentNotifPos == "Top-Left" then rp = UDim2.new(0,10,0,50+(idx-1)*44)
+                            elseif W.CurrentNotifPos == "Top-Center" then rp = UDim2.new(0.5,0,0,20+(idx-1)*44)
+                            else rp = UDim2.new(1,-330,1,-60-(idx-1)*44) end
+                            TS:Create(f,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{Position=rp}):Play()
+                        end
+                    end)
+                end
+            end)
+        end)
+    end
+    
+    -- ============================================================
+    -- UPDATE HUD
+    -- ============================================================
+    function W:_UpdateHUD()
+        for _,c in pairs(W.HUDList:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+        local count = 0
+        for name,mod in pairs(W.Modules) do
+            if mod.Get and mod:Get() then
+                count = count + 1
+                local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,0,0,14)
+                l.BackgroundTransparency = 1; l.Text = "+ "..name; l.TextColor3 = Color3.fromRGB(100,255,160)
+                l.Font = W.CurrentFont; l.TextSize = 10; l.TextXAlignment = Enum.TextXAlignment.Left
+                l.ZIndex = 102; l.Parent = W.HUDList
+            end
+        end
+        if count == 0 then
+            local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,0,0,14)
+            l.BackgroundTransparency = 1; l.Text = "No active modules"
+            l.TextColor3 = Color3.fromRGB(100,100,120); l.Font = W.CurrentFont; l.TextSize = 10
+            l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 102; l.Parent = W.HUDList
+        end
+    end
+    
+    -- ============================================================
+    -- COLUMN CREATION
+    -- ============================================================
+    local function reflowColumns(width)
+        W._currentColW = width
+        for idx,col in ipairs(W.AllColumns) do
+            if col and col.Frame then
+                local saved = W.SavedPositions[col.Frame.Name]
+                local posX = START_X + (idx-1) * (width + COL_GAP)
+                local posY = START_Y
+                if saved then posY = saved.Y.Offset end
+                col.Frame.Position = UDim2.new(0, posX, 0, posY)
+                col.Frame.Size = UDim2.new(0, width, 0, col.Frame.Size.Y.Offset)
+            end
+        end
+    end
+    
+    function W:_MakeColumn(headerText, iconText, posX, posY)
+        local col = Instance.new("Frame"); col.Name = "Col_"..headerText
+        col.Size = UDim2.new(0, COL_W_DEFAULT, 0, 80)
+        col.Position = UDim2.new(0, posX+30, 0, posY)
+        col.BackgroundColor3 = Color3.fromRGB(12,12,14); col.BorderSizePixel = 0
+        col.ZIndex = 10; col.Visible = false; col.Parent = W.ScreenGui; Cr(col, 8)
+        
+        local cs = Instance.new("UIScale"); cs.Scale = W.UIScaleVal; cs.Parent = col
+        table.insert(W.ColumnScales, cs)
+        local cst = Instance.new("UIStroke"); cst.Color = Color3.fromRGB(40,25,60); cst.Thickness = 1; cst.Parent = col
+        table.insert(W.UIStrokes, cst); table.insert(W.ColFrames, col)
+        
+        local header = Instance.new("Frame"); header.Name = "Header"
+        header.Size = UDim2.new(1,0,0,HEADER_H); header.BackgroundColor3 = Color3.fromRGB(18,18,22)
+        header.BorderSizePixel = 0; header.ZIndex = 11; header.Parent = col; Cr(header, 8)
+        local hf = Instance.new("Frame"); hf.Size = UDim2.new(1,0,0,10); hf.Position = UDim2.new(0,0,1,-10)
+        hf.BackgroundColor3 = Color3.fromRGB(18,18,22); hf.BorderSizePixel = 0; hf.ZIndex = 11; hf.Parent = header
+        table.insert(W.ColHeaders, header); table.insert(W.ColHeaderFills, hf)
+        
+        local icon = Instance.new("TextLabel"); icon.Size = UDim2.new(0,22,1,0); icon.Position = UDim2.new(0,10,0,0)
+        icon.BackgroundTransparency = 1; icon.Text = iconText or ""; icon.TextColor3 = W.CurrentAccent
+        icon.Font = W.CurrentFont; icon.TextSize = 13; icon.ZIndex = 12; icon.Parent = header
+        table.insert(W.ColumnIcons, icon); table.insert(W.FontedElements, icon)
+        
+        local title = Instance.new("TextLabel"); title.Size = UDim2.new(1,-34,1,0); title.Position = UDim2.new(0,28,0,0)
+        title.BackgroundTransparency = 1; title.Text = headerText; title.TextColor3 = Color3.fromRGB(230,230,230)
+        title.Font = W.CurrentFont; title.TextSize = 12; title.TextXAlignment = Enum.TextXAlignment.Left
+        title.ZIndex = 12; title.Parent = header; table.insert(W.FontedElements, title)
+        
+        local list = Instance.new("ScrollingFrame"); list.Name = "List"
+        list.Size = UDim2.new(1,-8,1,-38); list.Position = UDim2.new(0,4,0,34)
+        list.BackgroundTransparency = 1; list.BorderSizePixel = 0; list.ScrollBarThickness = 3
+        list.ScrollBarImageColor3 = Color3.fromRGB(120,60,150); list.CanvasSize = UDim2.new(0,0,0,0)
+        list.AutomaticCanvasSize = Enum.AutomaticSize.Y; list.ZIndex = 10; list.Parent = col
+        local ll = Instance.new("UIListLayout", list); ll.Padding = UDim.new(0,4); ll.SortOrder = Enum.SortOrder.LayoutOrder
+        local lp = Instance.new("UIPadding", list); lp.PaddingTop = UDim.new(0,2); lp.PaddingBottom = UDim.new(0,4)
+        
+        ll:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            local currentScale = W.UIScaleVal or 1
+            local ch = ll.AbsoluteContentSize.Y / currentScale
+            local pad = 38
+            local th = math.clamp(ch + pad, 80, COL_H_MAX)
+            col.Size = UDim2.new(0, W._currentColW, 0, th)
+            list.Size = UDim2.new(1,-8,1,-pad+4)
+        end)
+        
+        local dragging, dragStart, startPos
+        header.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true; dragStart = input.Position; startPos = col.Position
+            end
+        end)
+        header.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = false; W.SavedPositions[col.Name] = col.Position
+            end
+        end)
+        local colDragConn = UIS.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                local d = input.Position - dragStart
+                col.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset+d.X, startPos.Y.Scale, startPos.Y.Offset+d.Y)
+            end
+        end)
+        table.insert(W._connections, colDragConn)
+        
+        local fp = UDim2.new(0,posX,0,posY); W.SavedPositions[col.Name] = fp
+        col.Position = UDim2.new(fp.X.Scale, fp.X.Offset - (W._currentColW + 40), fp.Y.Scale, fp.Y.Offset)
+        col.Visible = false
+        
+        local cd = {Frame=col, List=list, Header=header, Scale=cs}
+        table.insert(W.AllColumns, cd)
+        return cd
+    end
+    
+    -- ============================================================
+    -- CREATE TAB
+    -- ============================================================
+    function W:CreateTab(tabConfig)
+        if typeof(tabConfig) == "string" then tabConfig = {Name=tabConfig, Icon="◆"} end
+        tabConfig = tabConfig or {}; tabConfig.Name = tabConfig.Name or "Tab"; tabConfig.Icon = tabConfig.Icon or "◆"
+        local idx = #W.AllColumns + 1
+        local posX = START_X + (idx-1) * (COL_W_DEFAULT + COL_GAP)
+        local col = W:_MakeColumn(tabConfig.Name, tabConfig.Icon, posX, START_Y)
+        
+        local T = {_col=col, _w=W}
+        
+        function T:CreateSection(name)
+            local sl = Instance.new("TextLabel"); sl.Size = UDim2.new(1,-20,0,16)
+            sl.Position = UDim2.new(0,10,0,0); sl.BackgroundTransparency = 1
+            sl.Text = string.upper(name); sl.TextColor3 = self._w.CurrentAccent
+            sl.Font = self._w.CurrentFont; sl.TextSize = 9
+            sl.TextXAlignment = Enum.TextXAlignment.Left; sl.ZIndex = 11
+            sl.Parent = self._col.List; sl.LayoutOrder = #self._col.List:GetChildren()
+            table.insert(self._w.FontedElements, sl); table.insert(self._w.TitleLabels, sl)
+            return T
+        end
+        
+        function T:CreateDivider()
+            local d = Instance.new("Frame"); d.Size = UDim2.new(1,-20,0,1)
+            d.Position = UDim2.new(0,10,0,0); d.BackgroundColor3 = Color3.fromRGB(35,35,42)
+            d.BorderSizePixel = 0; d.ZIndex = 11; d.Parent = self._col.List
+            d.LayoutOrder = #self._col.List:GetChildren(); return T
+        end
+        
+        function T:CreateToggle(opts)
+            local state = opts.Default or false; local cb = opts.Callback; local list = self._col.List
+            local row = Instance.new("TextButton"); row.Name = "Mod_"..opts.Name
+            row.Size = UDim2.new(1,0,0,MODULE_ROW_H)
+            row.BackgroundColor3 = state and EnabledBg(self._w.CurrentAccent) or Color3.fromRGB(20,20,24)
+            row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
+            row.ZIndex = 11; row.Parent = list; row.LayoutOrder = #list:GetChildren(); Cr(row,4)
+            table.insert(self._w.ModuleRows, row)
+            
+            local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1,-50,1,0)
+            lbl.Position = UDim2.new(0,10,0,0); lbl.BackgroundTransparency = 1; lbl.Text = opts.Name
+            lbl.TextColor3 = state and Lighten(self._w.CurrentAccent,0.4) or Color3.fromRGB(160,160,170)
+            lbl.Font = self._w.CurrentFont; lbl.TextSize = 11
+            lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.ZIndex = 12; lbl.Parent = row
+            table.insert(self._w.FontedElements, lbl)
+            
+            local sw = Instance.new("Frame"); sw.Name = "Switch"; sw.Size = UDim2.new(0,TOGGLE_W,0,TOGGLE_H)
+            sw.Position = UDim2.new(1,-34,0.5,-6)
+            sw.BackgroundColor3 = state and self._w.CurrentAccent or Color3.fromRGB(45,45,50)
+            sw.BorderSizePixel = 0; sw.ZIndex = 12; sw.Parent = row; Cr(sw,6)
+            local kb = Instance.new("Frame"); kb.Name = "Knob"; kb.Size = UDim2.new(0,KNOB_SIZE,0,KNOB_SIZE)
+            kb.Position = state and UDim2.new(0,KNOB_ON,0.5,-5) or UDim2.new(0,KNOB_OFF,0.5,-5)
+            kb.BackgroundColor3 = state and Color3.new(1,1,1) or Color3.fromRGB(200,200,200)
+            kb.BorderSizePixel = 0; kb.ZIndex = 13; kb.Parent = sw; Cr(kb,5)
+            
+            local function update()
+                local eb = EnabledBg(self._w.CurrentAccent)
+                TS:Create(row,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{BackgroundColor3=state and eb or Color3.fromRGB(20,20,24)}):Play()
+                TS:Create(lbl,TweenInfo.new(0.2),{TextColor3=state and Lighten(self._w.CurrentAccent,0.4) or Color3.fromRGB(160,160,170)}):Play()
+                TS:Create(sw,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{BackgroundColor3=state and self._w.CurrentAccent or Color3.fromRGB(45,45,50)}):Play()
+                TS:Create(kb,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{Position=state and UDim2.new(0,KNOB_ON,0.5,-5) or UDim2.new(0,KNOB_OFF,0.5,-5),BackgroundColor3=state and Color3.new(1,1,1) or Color3.fromRGB(200,200,200)}):Play()
+            end
+            table.insert(self._w.AllModuleUI, {Row=row, Update=update})
+            
+            row.MouseEnter:Connect(function() if not state then TS:Create(row,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(28,28,34)}):Play() end end)
+            row.MouseLeave:Connect(function() if not state then TS:Create(row,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(20,20,24)}):Play() end end)
+            
+            local modObj = {Frame=row, Get=function() return state end,
+                Set=function(_,v,silent) state=v; update(); self._w.Modules[opts.Name]=modObj; self._w:_UpdateHUD()
+                    if cb then task.spawn(cb,state) end
+                    if not silent then self._w:Notify({Title=opts.Name,Content=state and "enabled" or "disabled",Type=state and "success" or "info",Duration=2}) end
+                end}
+            
+            row.MouseButton1Click:Connect(function()
+                state = not state; update(); self._w.Modules[opts.Name] = modObj; self._w:_UpdateHUD()
+                if cb then task.spawn(cb,state) end
+                self._w:Notify({Title=opts.Name,Content=state and "enabled" or "disabled",Type=state and "success" or "info",Duration=2})
+            end)
+            row.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton2 then
+                    local kbLabel = self._w.Keybinds[opts.Name] or "None"
+                    local menuOpts = {
+                        {Label = opts.Name, Color = self._w.CurrentAccent},
+                        {Label = state and "Disable" or "Enable", Callback = function()
+                            state = not state; update(); self._w.Modules[opts.Name] = modObj; self._w:_UpdateHUD()
+                            if cb then task.spawn(cb, state) end
+                        end},
+                        {Label = "Bind Key ["..kbLabel.."]", Color = Color3.fromRGB(200,180,100), Callback = function()
+                            self._w:Notify({Title=opts.Name,Content="Press any key... (Esc to remove)",Type="info",Duration=3})
+                            local bindConn
+                            bindConn = UIS.InputBegan:Connect(function(input2, gpe2)
+                                if input2.UserInputType == Enum.UserInputType.Keyboard then
+                                    if input2.KeyCode == Enum.KeyCode.Escape then
+                                        self._w.Keybinds[opts.Name] = nil
+                                        self._w:Notify({Title=opts.Name,Content="Keybind removed",Type="info",Duration=2})
+                                    else
+                                        self._w.Keybinds[opts.Name] = input2.KeyCode.Name
+                                        self._w:Notify({Title=opts.Name,Content="Bound to ["..input2.KeyCode.Name.."]",Type="success",Duration=2})
+                                    end
+                                    bindConn:Disconnect()
+                                end
+                            end)
+                        end}
+                    }
+                    self._w:ShowContextMenu(menuOpts, input.Position)
+                end
+            end)
+            self._w.Modules[opts.Name] = modObj
+            return modObj
+        end
+        
+        function T:CreateButton(opts)
+            local cb = opts.Callback; local list = self._col.List
+            local row = Instance.new("TextButton"); row.Name = "Btn_"..opts.Name
+            row.Size = UDim2.new(1,0,0,MODULE_ROW_H); row.BackgroundColor3 = Color3.fromRGB(20,20,24)
+            row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
+            row.ZIndex = 11; row.Parent = list; row.LayoutOrder = #list:GetChildren(); Cr(row,4)
+            table.insert(self._w.ModuleRows, row)
+            local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,-20,1,0); l.Position = UDim2.new(0,10,0,0)
+            l.BackgroundTransparency = 1; l.Text = opts.Name; l.TextColor3 = Color3.fromRGB(160,160,170)
+            l.Font = self._w.CurrentFont; l.TextSize = 11; l.TextXAlignment = Enum.TextXAlignment.Left
+            l.ZIndex = 12; l.Parent = row
+            row.MouseEnter:Connect(function() TS:Create(row,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(28,28,34)}):Play() end)
+            row.MouseLeave:Connect(function() TS:Create(row,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(20,20,24)}):Play() end)
+            row.MouseButton1Click:Connect(function()
+                TS:Create(row,TweenInfo.new(0.1),{BackgroundColor3=EnabledBg(self._w.CurrentAccent)}):Play()
+                task.delay(0.1,function() TS:Create(row,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(20,20,24)}):Play() end)
+                if cb then task.spawn(cb) end
+            end)
+            return {Frame=row}
+        end
+        
+        function T:CreateSlider(opts)
+            local mn = opts.Min or 0; local mx = opts.Max or 100
+            local val = opts.Default or mn; local cb = opts.Callback; local list = self._col.List
+            local pct = (val-mn)/(mx-mn)
+            
+            local row = Instance.new("Frame"); row.Size = UDim2.new(1,0,0,SLIDER_ROW_H)
+            row.BackgroundColor3 = Color3.fromRGB(20,20,24); row.BorderSizePixel = 0
+            row.ZIndex = 11; row.Parent = list; row.LayoutOrder = #list:GetChildren(); Cr(row,4)
+            table.insert(self._w.SliderRows, row)
+            
+            local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(0.55,-10,0,16)
+            lbl.Position = UDim2.new(0,10,0,4); lbl.BackgroundTransparency = 1; lbl.Text = opts.Name
+            lbl.TextColor3 = Color3.fromRGB(160,160,170); lbl.Font = self._w.CurrentFont
+            lbl.TextSize = 10; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.ZIndex = 12; lbl.Parent = row
+            local vlbl = Instance.new("TextLabel"); vlbl.Size = UDim2.new(0.45,-10,0,16)
+            vlbl.Position = UDim2.new(0.55,0,0,4); vlbl.BackgroundTransparency = 1
+            vlbl.Text = tostring(val); vlbl.TextColor3 = self._w.CurrentAccent; vlbl.Font = self._w.CurrentFont
+            vlbl.TextSize = 10; vlbl.TextXAlignment = Enum.TextXAlignment.Right; vlbl.ZIndex = 12; vlbl.Parent = row
+            table.insert(self._w.FontedElements, vlbl); table.insert(self._w.TitleLabels, vlbl)
+            
+            local track = Instance.new("Frame"); track.Size = UDim2.new(1,-20,0,6)
+            track.Position = UDim2.new(0,10,0,28); track.BackgroundColor3 = Color3.fromRGB(35,35,42)
+            track.BorderSizePixel = 0; track.ZIndex = 12; track.Parent = row; Cr(track,3)
+            local fill = Instance.new("Frame"); fill.Size = UDim2.new(pct,0,1,0)
+            fill.BackgroundColor3 = self._w.CurrentAccent; fill.BorderSizePixel = 0
+            fill.ZIndex = 12; fill.Parent = track; Cr(fill,3)
+            table.insert(self._w.SliderFills, fill)
+            local handle = Instance.new("TextButton"); handle.Size = UDim2.new(0,12,0,12)
+            handle.Position = UDim2.new(pct,-6,0.5,-6); handle.BackgroundColor3 = self._w.CurrentAccent
+            handle.Text = ""; handle.BorderSizePixel = 0; handle.AutoButtonColor = false
+            handle.ZIndex = 13; handle.Parent = track; Cr(handle,6)
+            table.insert(self._w.SliderHandles, handle)
+            
+            local sliding = false; local dsx, dsp = 0, pct
+            local function apply(nv, silent)
+                val = math.clamp(nv,mn,mx); pct = (val-mn)/(mx-mn)
+                fill.Size = UDim2.new(pct,0,1,0); handle.Position = UDim2.new(pct,-6,0.5,-6)
+                vlbl.Text = tostring(val); if cb and not silent then task.spawn(cb,val) end
+            end
+            handle.InputBegan:Connect(function(input)
+                if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then sliding=true; dsx=input.Position.X; dsp=pct end
+            end)
+            local sConn1 = UIS.InputChanged:Connect(function(input)
+                if sliding and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+                    local w = math.max(track.AbsoluteSize.X,1); local d = input.Position.X-dsx
+                    apply(math.floor(mn + math.clamp(dsp+(d/w),0,1)*(mx-mn)+0.5))
+                end
+            end)
+            local sConn2 = UIS.InputEnded:Connect(function(input)
+                if sliding and (input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch) then sliding=false end
+            end)
+            table.insert(self._w._connections, sConn1)
+            table.insert(self._w._connections, sConn2)
+            
+            local so = {Frame=row, Get=function() return val end, Set=function(_,v,silent) apply(v, silent) end}
+            self._w.Modules[opts.Name] = so; return so
+        end
+        
+        function T:CreateDropdown(opts)
+            local list = self._col.List; local options = opts.Options or {}
+            local ci = 1; local cb = opts.Callback
+            for i,v in ipairs(options) do if v==opts.Default then ci=i break end end
+            
+            local frame = Instance.new("Frame"); frame.Size = UDim2.new(1,0,0,MODULE_ROW_H)
+            frame.BackgroundColor3 = Color3.fromRGB(20,20,24); frame.BorderSizePixel = 0
+            frame.ZIndex = 11; frame.Parent = list; frame.LayoutOrder = #list:GetChildren(); Cr(frame,4)
+            table.insert(self._w.ModuleRows, frame)
+            
+            local nl = Instance.new("TextLabel", frame)
+            nl.Size = UDim2.new(0.5,-10,1,0); nl.Position = UDim2.new(0,10,0,0)
+            nl.BackgroundTransparency = 1; nl.Text = opts.Name
+            nl.TextColor3 = Color3.fromRGB(160,160,170); nl.Font = self._w.CurrentFont
+            nl.TextSize = 11; nl.TextXAlignment = Enum.TextXAlignment.Left; nl.ZIndex = 12
+            table.insert(self._w.FontedElements, nl)
+            
+            local disp = Instance.new("TextLabel"); disp.Size = UDim2.new(0.45,-10,1,0)
+            disp.Position = UDim2.new(0.55,0,0,0); disp.BackgroundTransparency = 1
+            disp.Text = options[ci] or ""; disp.TextColor3 = Color3.fromRGB(180,180,200)
+            disp.Font = self._w.CurrentFont; disp.TextSize = 10
+            disp.TextXAlignment = Enum.TextXAlignment.Right; disp.ZIndex = 12; disp.Parent = frame
+            table.insert(self._w.FontedElements, disp)
+            
+            local db = Instance.new("TextButton"); db.Size = UDim2.new(1,0,1,0)
+            db.BackgroundTransparency = 1; db.Text = ""; db.ZIndex = 13; db.Parent = frame
+            local open = false
+            local oc = math.min(#options, 8)
+            local of = Instance.new("Frame"); of.Size = UDim2.new(0, frame.AbsoluteSize.X, 0, oc*26+4)
+            of.BackgroundColor3 = Color3.fromRGB(16,16,20); of.BorderSizePixel = 0
+            of.ZIndex = 500; of.Visible = false; of.Parent = self._w.ScreenGui; Cr(of,4)
+            Instance.new("UIStroke", of).Color = Color3.fromRGB(40,25,60)
+            Instance.new("UIListLayout", of).Padding = UDim.new(0,2)
+            local op = Instance.new("UIPadding", of); op.PaddingTop = UDim.new(0,2); op.PaddingBottom = UDim.new(0,2)
+            op.PaddingLeft = UDim.new(0,2); op.PaddingRight = UDim.new(0,2)
+            
+            local function closeDropdown()
+                open = false; of.Visible = false
+            end
+            
+            for i,opt in ipairs(options) do
+                local ob = Instance.new("TextButton"); ob.Size = UDim2.new(1,0,0,24)
+                ob.BackgroundColor3 = Color3.fromRGB(24,24,32); ob.Text = "  "..opt
+                ob.TextColor3 = Color3.fromRGB(200,200,200); ob.Font = self._w.CurrentFont
+                ob.TextSize = 10; ob.TextXAlignment = Enum.TextXAlignment.Left
+                ob.BorderSizePixel = 0; ob.AutoButtonColor = false; ob.ZIndex = 501; ob.Parent = of; Cr(ob,3)
+                ob.MouseEnter:Connect(function() TS:Create(ob,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(40,25,55)}):Play() end)
+                ob.MouseLeave:Connect(function() TS:Create(ob,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(24,24,32)}):Play() end)
+                ob.MouseButton1Click:Connect(function()
+                    ci=i; disp.Text=opt; closeDropdown()
+                    if cb then task.spawn(cb,opt) end
+                end)
+            end
+            db.MouseButton1Click:Connect(function()
+                open = not open; of.Visible = open
+                if open then
+                    local function updatePos()
+                        local abs = frame.AbsolutePosition + Vector2.new(0, frame.AbsoluteSize.Y + 2)
+                        of.Position = UDim2.new(0, abs.X, 0, abs.Y)
+                        of.Size = UDim2.new(0, frame.AbsoluteSize.X, 0, oc*26+4)
+                    end
+                    updatePos()
+                    if self._w._ddPosConn then self._w._ddPosConn:Disconnect() end
+                    self._w._ddPosConn = frame:GetPropertyChangedSignal("AbsolutePosition"):Connect(updatePos)
+                else
+                    if self._w._ddPosConn then self._w._ddPosConn:Disconnect() self._w._ddPosConn = nil end
+                end
+            end)
+            local ddConn = UIS.InputBegan:Connect(function(input, gpe)
+                if open and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+                    local mp = UIS:GetMouseLocation()
+                    local ofPos, ofSize = of.AbsolutePosition, of.AbsoluteSize
+                    local frPos, frSize = frame.AbsolutePosition, frame.AbsoluteSize
+                    local inOf = mp.X >= ofPos.X and mp.X <= ofPos.X+ofSize.X and mp.Y >= ofPos.Y and mp.Y <= ofPos.Y+ofSize.Y
+                    local inFr = mp.X >= frPos.X and mp.X <= frPos.X+frSize.X and mp.Y >= frPos.Y and mp.Y <= frPos.Y+frSize.Y
+                    if not inOf and not inFr then closeDropdown() end
+                end
+            end)
+            table.insert(self._w._connections, ddConn)
+            
+            local do2 = {Frame=frame, Get=function() return options[ci] end,
+                Set=function(_,v) for i,o in ipairs(options) do if o==v then ci=i; disp.Text=o; break end end end}
+            self._w.Modules[opts.Name] = do2; return do2
+        end
+        
+        function T:CreateLabel(opts)
+            local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,-20,0,16)
+            l.Position = UDim2.new(0,10,0,0); l.BackgroundTransparency = 1
+            l.Text = opts.Text or opts.Name or ""; l.TextColor3 = opts.Color or Color3.fromRGB(110,110,120)
+            l.Font = self._w.CurrentFont; l.TextSize = 9; l.TextXAlignment = Enum.TextXAlignment.Left
+            l.TextWrapped = true; l.ZIndex = 11; l.Parent = self._col.List
+            l.LayoutOrder = #self._col.List:GetChildren()
+            table.insert(self._w.FontedElements, l)
+            if opts.Color then table.insert(self._w.TitleLabels, l) end
+            return T
+        end
+        
+        function T:CreateInput(opts)
+            local list = self._col.List; local cb = opts.Callback
+            local frame = Instance.new("Frame"); frame.Size = UDim2.new(1,0,0,INPUT_ROW_H)
+            frame.BackgroundColor3 = Color3.fromRGB(16,16,20); frame.BorderSizePixel = 0
+            frame.ZIndex = 11; frame.Parent = list; frame.LayoutOrder = #list:GetChildren(); Cr(frame,4)
+            table.insert(self._w.InputFrames, frame)
+            local border = Instance.new("UIStroke", frame); border.Color = Color3.fromRGB(35,35,42); border.Thickness = 1
+            local box = Instance.new("TextBox"); box.Size = UDim2.new(1,-20,1,0); box.Position = UDim2.new(0,10,0,0)
+            box.BackgroundTransparency = 1; box.PlaceholderText = opts.PlaceholderText or ""
+            box.PlaceholderColor3 = Color3.fromRGB(100,100,110); box.Text = ""
+            box.TextColor3 = Color3.fromRGB(200,200,210); box.Font = self._w.CurrentFont
+            box.TextSize = 10; box.TextXAlignment = Enum.TextXAlignment.Left
+            box.ClearTextOnFocus = false; box.ZIndex = 12; box.Parent = frame
+            table.insert(self._w.FontedElements, box)
+            box.Focused:Connect(function() border.Color = self._w.CurrentAccent end)
+            box.FocusLost:Connect(function() border.Color = Color3.fromRGB(35,35,42); if cb then task.spawn(cb,box.Text) end end)
+            return {Frame=frame, Get=function() return box.Text end, Set=function(_,v) box.Text=v end}
+        end
+        
+        function T:CreateParagraph(opts)
+            local frame = Instance.new("Frame"); frame.Size = UDim2.new(1,0,0,0)
+            frame.AutomaticSize = Enum.AutomaticSize.Y; frame.BackgroundColor3 = Color3.fromRGB(20,20,24)
+            frame.BorderSizePixel = 0; frame.ZIndex = 11; frame.Parent = self._col.List
+            frame.LayoutOrder = #self._col.List:GetChildren(); Cr(frame,4)
+            local p = Instance.new("UIPadding", frame); p.PaddingTop=UDim.new(0,6); p.PaddingLeft=UDim.new(0,10)
+            p.PaddingRight=UDim.new(0,10); p.PaddingBottom=UDim.new(0,6)
+            table.insert(self._w.ParagraphFrames, frame)
+            local tl = Instance.new("TextLabel"); tl.Size = UDim2.new(1,0,0,14)
+            tl.BackgroundTransparency = 1; tl.Text = opts.Title or ""
+            tl.TextColor3 = self._w.CurrentAccent; tl.Font = self._w.CurrentFont
+            tl.TextSize = 10; tl.TextXAlignment = Enum.TextXAlignment.Left; tl.ZIndex = 12; tl.Parent = frame
+            table.insert(self._w.ParagraphTitles, tl); table.insert(self._w.FontedElements, tl)
+            local cl = Instance.new("TextLabel"); cl.Size = UDim2.new(1,0,0,0)
+            cl.AutomaticSize = Enum.AutomaticSize.Y; cl.Position = UDim2.new(0,0,0,18)
+            cl.BackgroundTransparency = 1; cl.Text = opts.Content or ""
+            cl.TextColor3 = Color3.fromRGB(160,160,170); cl.Font = self._w.CurrentFont
+            cl.TextSize = 9; cl.TextXAlignment = Enum.TextXAlignment.Left; cl.TextWrapped = true
+            cl.ZIndex = 12; cl.Parent = frame; table.insert(self._w.FontedElements, cl)
+            return {Frame=frame, Set=function(_,data) if data.Title then tl.Text=data.Title end; if data.Content then cl.Text=data.Content end end}
+        end
+        
+        return T
+    end
+    
+    -- ============================================================
+    -- CONFIG SYSTEM
+    -- ============================================================
+    function W:SetConfigName(name)
+        self._configName = name or "Default"
+    end
+    
+    function W:SaveConfig(name)
+        name = name or self._configName
+        if not isfolder(self.ConfigFolder) then makefolder(self.ConfigFolder) end
+        local cfg = {}
+        for mn,mod in pairs(self.Modules) do if mod.Get then cfg[mn] = mod:Get() end end
+        cfg._AccentName = self.CurrentAccentName; cfg._FontName = self.CurrentFontName
+        cfg._NotifPos = self.CurrentNotifPos; cfg._Breathing = self.BreathingEnabled
+        cfg._UITransparency = self.UITransparencyVal; cfg._UIScale = self.UIScaleVal*100
+        cfg._Keybinds = self.Keybinds
+        writefile(self.ConfigFolder.."/"..name..".json", HS:JSONEncode(cfg))
+        self:Notify({Title="Config",Content="Saved: "..name,Type="success",Duration=2})
+    end
+    
+    function W:LoadConfig(name)
+        name = name or self._configName
+        local path = self.ConfigFolder.."/"..name..".json"
+        if not isfile(path) then self:Notify({Title="Config",Content="Not found: "..name,Type="warning",Duration=2}) return end
+        local ok, data = pcall(function() return HS:JSONDecode(readfile(path)) end)
+        if not ok or type(data) ~= "table" then self:Notify({Title="Config",Content="Failed to load",Type="alert",Duration=2}) return end
+        for mn,mod in pairs(self.Modules) do if data[mn] ~= nil and mod.Set then mod:Set(data[mn], true) end end
+        if data._AccentName and AccentPresets[data._AccentName] then
+            self.CurrentAccentName = data._AccentName; self.CurrentAccent = AccentPresets[self.CurrentAccentName]
+            self:ApplyAccentColor(); if self.BreathingEnabled then self:StopBreathing() self:StartBreathing() end
+        end
+        if data._FontName and FontPresets[data._FontName] then self.CurrentFontName = data._FontName; self.CurrentFont = FontPresets[self.CurrentFontName]; self:ApplyFont() end
+        if data._NotifPos then self.CurrentNotifPos = data._NotifPos end
+        if data._Breathing ~= nil then self.BreathingEnabled = data._Breathing; if self.BreathingEnabled then self:StartBreathing() else self:StopBreathing() end end
+        if data._UITransparency then self.UITransparencyVal = data._UITransparency; self:ApplyUITransparency(self.UITransparencyVal/100) end
+        if data._UIScale then
+            self.UIScaleVal = data._UIScale/100
+            for _,s in ipairs(self.ColumnScales) do if s and s.Parent then s.Scale = self.UIScaleVal end end
+            self.HUDScale.Scale = self.UIScaleVal
+        end
+        if data._Keybinds then self.Keybinds = data._Keybinds end
+        self:Notify({Title="Config",Content="Loaded: "..name,Type="success",Duration=2})
+    end
+    
+    function W:Destroy()
+        print("[NexaUI] Destroy called")
+        self:StopBreathing()
+        if W._toggleConn then pcall(function() W._toggleConn:Disconnect() end) end
+        for _, conn in ipairs(W._connections) do pcall(function() conn:Disconnect() end) end
+        W._connections = {}
+        for _,f in pairs(self.ActiveNotifs) do if f then pcall(function() f:Destroy() end) end end
+        self.ActiveNotifs = {}
+        for _,col in pairs(self.AllColumns) do if col.Frame then pcall(function() col.Frame:Destroy() end) end end
+        self.AllColumns = {}
+        if self.HUDFrame then pcall(function() self.HUDFrame:Destroy() end) end
+        if self.Backdrop then pcall(function() self.Backdrop:Destroy() end) end
+        if self.ScreenGui then pcall(function() self.ScreenGui:Destroy() end) end
+    end
+    
+    -- ============================================================
+    -- KEYBIND
+    -- ============================================================
+    W._toggleConn = UIS.InputBegan:Connect(function(input, gpe)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            W:HideContextMenu()
+        end
+        if input.KeyCode == W.KeybindToggle or input.KeyCode == Enum.KeyCode.Insert then
+            print("[NexaUI] Toggle Key Pressed!")
+            W:ToggleUI()
+            return
+        end
+        if gpe then return end
+        for mn, kn in pairs(W.Keybinds) do
+            if input.KeyCode == Enum.KeyCode[kn] then
+                local tm = W.Modules[mn]
+                if tm and tm.Get and tm.Set then tm:Set(not tm:Get(), false) end
+            end
+        end
+    end)
+    
+    -- ============================================================
+    -- THEME COLUMN (auto-created as last column)
+    -- ============================================================
+    local themeCol = W:_MakeColumn("Theme", "❖", START_X + (COL_W_DEFAULT+COL_GAP) * 6, START_Y)
+    
+    -- APPEARANCE header
+    local sl = Instance.new("TextLabel"); sl.Size = UDim2.new(1,-20,0,16); sl.Position = UDim2.new(0,10,0,0)
+    sl.BackgroundTransparency = 1; sl.Text = "APPEARANCE"; sl.TextColor3 = W.CurrentAccent
+    sl.Font = W.CurrentFont; sl.TextSize = 9; sl.TextXAlignment = Enum.TextXAlignment.Left
+    sl.ZIndex = 11; sl.Parent = themeCol.List
+    table.insert(W.FontedElements, sl); table.insert(W.TitleLabels, sl)
+    
+    -- Breathing Effect toggle
+    local bs = W.BreathingEnabled
+    local br = Instance.new("TextButton"); br.Size = UDim2.new(1,0,0,MODULE_ROW_H)
+    br.BackgroundColor3 = bs and EnabledBg(W.CurrentAccent) or Color3.fromRGB(20,20,24); br.Text = ""; br.BorderSizePixel = 0
+    br.AutoButtonColor = false; br.ZIndex = 11; br.Parent = themeCol.List
+    br.LayoutOrder = #themeCol.List:GetChildren(); Cr(br,4); table.insert(W.ModuleRows, br)
+    local bl = Instance.new("TextLabel"); bl.Size = UDim2.new(1,-50,1,0); bl.Position = UDim2.new(0,10,0,0)
+    bl.BackgroundTransparency = 1; bl.Text = "Breathing Effect"
+    bl.TextColor3 = bs and Lighten(W.CurrentAccent,0.4) or Color3.fromRGB(160,160,170); bl.Font = W.CurrentFont; bl.TextSize = 11
+    bl.TextXAlignment = Enum.TextXAlignment.Left; bl.ZIndex = 12; bl.Parent = br
+    table.insert(W.FontedElements, bl)
+    local bsw = Instance.new("Frame"); bsw.Size = UDim2.new(0,TOGGLE_W,0,TOGGLE_H)
+    bsw.Position = UDim2.new(1,-34,0.5,-6); bsw.BackgroundColor3 = bs and W.CurrentAccent or Color3.fromRGB(45,45,50)
+    bsw.BorderSizePixel = 0; bsw.ZIndex = 12; bsw.Parent = br; Cr(bsw,6)
+    local bkb = Instance.new("Frame"); bkb.Size = UDim2.new(0,KNOB_SIZE,0,KNOB_SIZE)
+    bkb.Position = bs and UDim2.new(0,KNOB_ON,0.5,-5) or UDim2.new(0,KNOB_OFF,0.5,-5); bkb.BackgroundColor3 = bs and Color3.new(1,1,1) or Color3.fromRGB(200,200,200)
+    bkb.BorderSizePixel = 0; bkb.ZIndex = 13; bkb.Parent = bsw; Cr(bkb,5)
+    local bMod = {Frame=br, Get=function() return bs end, Set=function(_,v,silent)
+        bs=v; W.BreathingEnabled=v; if v then W:StartBreathing() else W:StopBreathing() end
+        TS:Create(bsw,TweenInfo.new(0.2),{BackgroundColor3=v and W.CurrentAccent or Color3.fromRGB(45,45,50)}):Play()
+        TS:Create(bkb,TweenInfo.new(0.2),{Position=v and UDim2.new(0,KNOB_ON,0.5,-5) or UDim2.new(0,KNOB_OFF,0.5,-5),BackgroundColor3=v and Color3.new(1,1,1) or Color3.fromRGB(200,200,200)}):Play()
+    end}
+    W.Modules["Breathing"] = bMod
+    br.MouseButton1Click:Connect(function() bs = not bs; bMod:Set(bs); W:_UpdateHUD() end)
+    
+    -- Accent Color
+    local acl = "Accent: Purple"
+    local acr = Instance.new("TextButton"); acr.Size = UDim2.new(1,0,0,MODULE_ROW_H)
+    acr.BackgroundColor3 = Color3.fromRGB(20,20,24); acr.Text = ""; acr.BorderSizePixel = 0
+    acr.AutoButtonColor = false; acr.ZIndex = 11; acr.Parent = themeCol.List
+    acr.LayoutOrder = #themeCol.List:GetChildren(); Cr(acr,4); table.insert(W.ModuleRows, acr)
+    local aclbl = Instance.new("TextLabel"); aclbl.Size = UDim2.new(1,-20,1,0); aclbl.Position = UDim2.new(0,10,0,0)
+    aclbl.BackgroundTransparency = 1; aclbl.Text = acl
+    aclbl.TextColor3 = Color3.fromRGB(160,160,170); aclbl.Font = W.CurrentFont; aclbl.TextSize = 11
+    aclbl.TextXAlignment = Enum.TextXAlignment.Left; aclbl.ZIndex = 12; aclbl.Parent = acr
+    table.insert(W.FontedElements, aclbl)
+    acr.MouseButton1Click:Connect(function()
+        local idx = 1; for i,n in ipairs(AccentNames) do if n==W.CurrentAccentName then idx=i break end end
+        idx = idx+1; if idx > #AccentNames then idx = 1 end
+        W.CurrentAccentName = AccentNames[idx]; W.CurrentAccent = AccentPresets[W.CurrentAccentName]
+        aclbl.Text = "Accent: "..W.CurrentAccentName; W:ApplyAccentColor()
+        if W.BreathingEnabled then W:StopBreathing() W:StartBreathing() end
+        W:Notify({Title="Theme",Content="Accent: "..W.CurrentAccentName,Type="info",Duration=2})
+    end)
+    
+    -- Divider
+    local d1 = Instance.new("Frame"); d1.Size = UDim2.new(1,-20,0,1); d1.Position = UDim2.new(0,10,0,0)
+    d1.BackgroundColor3 = Color3.fromRGB(35,35,42); d1.BorderSizePixel = 0; d1.ZIndex = 11; d1.Parent = themeCol.List
+    
+    -- Font
+    local fcl = "Font: Gotham"
+    local fcr = Instance.new("TextButton"); fcr.Size = UDim2.new(1,0,0,MODULE_ROW_H)
+    fcr.BackgroundColor3 = Color3.fromRGB(20,20,24); fcr.Text = ""; fcr.BorderSizePixel = 0
+    fcr.AutoButtonColor = false; fcr.ZIndex = 11; fcr.Parent = themeCol.List
+    fcr.LayoutOrder = #themeCol.List:GetChildren(); Cr(fcr,4); table.insert(W.ModuleRows, fcr)
+    local fclbl = Instance.new("TextLabel"); fclbl.Size = UDim2.new(1,-20,1,0); fclbl.Position = UDim2.new(0,10,0,0)
+    fclbl.BackgroundTransparency = 1; fclbl.Text = fcl
+    fclbl.TextColor3 = Color3.fromRGB(160,160,170); fclbl.Font = W.CurrentFont; fclbl.TextSize = 11
+    fclbl.TextXAlignment = Enum.TextXAlignment.Left; fclbl.ZIndex = 12; fclbl.Parent = fcr
+    table.insert(W.FontedElements, fclbl)
+    fcr.MouseButton1Click:Connect(function()
+        local idx = 1; for i,n in ipairs(FontNames) do if n==W.CurrentFontName then idx=i break end end
+        idx = idx+1; if idx > #FontNames then idx = 1 end
+        W.CurrentFontName = FontNames[idx]; W.CurrentFont = FontPresets[W.CurrentFontName]
+        fclbl.Text = "Font: "..W.CurrentFontName; W:ApplyFont()
+        W:Notify({Title="Theme",Content="Font: "..W.CurrentFontName,Type="info",Duration=2})
+    end)
+    
+    -- Notification Position
+    local npl = "Notifications: "..W.CurrentNotifPos
+    local npr = Instance.new("TextButton"); npr.Size = UDim2.new(1,0,0,MODULE_ROW_H)
+    npr.BackgroundColor3 = Color3.fromRGB(20,20,24); npr.Text = ""; npr.BorderSizePixel = 0
+    npr.AutoButtonColor = false; npr.ZIndex = 11; npr.Parent = themeCol.List
+    npr.LayoutOrder = #themeCol.List:GetChildren(); Cr(npr,4); table.insert(W.ModuleRows, npr)
+    local nplbl = Instance.new("TextLabel"); nplbl.Size = UDim2.new(1,-20,1,0); nplbl.Position = UDim2.new(0,10,0,0)
+    nplbl.BackgroundTransparency = 1; nplbl.Text = npl
+    nplbl.TextColor3 = Color3.fromRGB(160,160,170); nplbl.Font = W.CurrentFont; nplbl.TextSize = 11
+    nplbl.TextXAlignment = Enum.TextXAlignment.Left; nplbl.ZIndex = 12; nplbl.Parent = npr
+    table.insert(W.FontedElements, nplbl)
+    npr.MouseButton1Click:Connect(function()
+        local idx = 1; for i,n in ipairs(NotifPositions) do if n==W.CurrentNotifPos then idx=i break end end
+        idx = (idx % #NotifPositions) + 1; W.CurrentNotifPos = NotifPositions[idx]
+        nplbl.Text = "Notifications: "..W.CurrentNotifPos
+        W:Notify({Title="Theme",Content="Position: "..W.CurrentNotifPos,Type="info",Duration=2})
+    end)
+    
+    -- Divider
+    local d2 = Instance.new("Frame"); d2.Size = UDim2.new(1,-20,0,1); d2.Position = UDim2.new(0,10,0,0)
+    d2.BackgroundColor3 = Color3.fromRGB(35,35,42); d2.BorderSizePixel = 0; d2.ZIndex = 11; d2.Parent = themeCol.List
+    
+    -- DISPLAY header
+    local sl2 = Instance.new("TextLabel"); sl2.Size = UDim2.new(1,-20,0,16); sl2.Position = UDim2.new(0,10,0,0)
+    sl2.BackgroundTransparency = 1; sl2.Text = "DISPLAY"; sl2.TextColor3 = W.CurrentAccent
+    sl2.Font = W.CurrentFont; sl2.TextSize = 9; sl2.TextXAlignment = Enum.TextXAlignment.Left
+    sl2.ZIndex = 11; sl2.Parent = themeCol.List
+    table.insert(W.FontedElements, sl2); table.insert(W.TitleLabels, sl2)
+    
+    -- FOV Slider
+    local function makeBuiltinSlider(name, min, max, default, cb)
+        local val = default; local pct = (val-min)/(max-min)
+        local row = Instance.new("Frame"); row.Size = UDim2.new(1,0,0,SLIDER_ROW_H)
+        row.BackgroundColor3 = Color3.fromRGB(20,20,24); row.BorderSizePixel = 0
+        row.ZIndex = 11; row.Parent = themeCol.List; row.LayoutOrder = #themeCol.List:GetChildren(); Cr(row,4)
+        table.insert(W.SliderRows, row)
+        local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(0.55,-10,0,16); lbl.Position = UDim2.new(0,10,0,4)
+        lbl.BackgroundTransparency = 1; lbl.Text = name; lbl.TextColor3 = Color3.fromRGB(160,160,170)
+        lbl.Font = W.CurrentFont; lbl.TextSize = 10; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.ZIndex = 12; lbl.Parent = row
+        local vlbl = Instance.new("TextLabel"); vlbl.Size = UDim2.new(0.45,-10,0,16); vlbl.Position = UDim2.new(0.55,0,0,4)
+        vlbl.BackgroundTransparency = 1; vlbl.Text = tostring(val); vlbl.TextColor3 = W.CurrentAccent
+        vlbl.Font = W.CurrentFont; vlbl.TextSize = 10; vlbl.TextXAlignment = Enum.TextXAlignment.Right
+        vlbl.ZIndex = 12; vlbl.Parent = row
+        table.insert(W.FontedElements, vlbl); table.insert(W.TitleLabels, vlbl)
+        local track = Instance.new("Frame"); track.Size = UDim2.new(1,-20,0,6); track.Position = UDim2.new(0,10,0,28)
+        track.BackgroundColor3 = Color3.fromRGB(35,35,42); track.BorderSizePixel = 0; track.ZIndex = 12; track.Parent = row; Cr(track,3)
+        local fill = Instance.new("Frame"); fill.Size = UDim2.new(pct,0,1,0); fill.BackgroundColor3 = W.CurrentAccent
+        fill.BorderSizePixel = 0; fill.ZIndex = 12; fill.Parent = track; Cr(fill,3)
+        table.insert(W.SliderFills, fill)
+        local handle = Instance.new("TextButton"); handle.Size = UDim2.new(0,12,0,12); handle.Position = UDim2.new(pct,-6,0.5,-6)
+        handle.BackgroundColor3 = W.CurrentAccent; handle.Text = ""; handle.BorderSizePixel = 0
+        handle.AutoButtonColor = false; handle.ZIndex = 13; handle.Parent = track; Cr(handle,6)
+        table.insert(W.SliderHandles, handle)
+        local sliding = false; local dsx, dsp = 0, pct
+        local function apply(nv, silent)
+            val = math.clamp(nv,min,max); pct = (val-min)/(max-min)
+            fill.Size = UDim2.new(pct,0,1,0); handle.Position = UDim2.new(pct,-6,0.5,-6)
+            vlbl.Text = tostring(val); if cb and not silent then task.spawn(cb,val) end
+        end
+        handle.InputBegan:Connect(function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then sliding=true; dsx=input.Position.X; dsp=pct end
+        end)
+        local bConn1 = UIS.InputChanged:Connect(function(input)
+            if sliding and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+                local w = math.max(track.AbsoluteSize.X,1); local d = input.Position.X-dsx
+                apply(math.floor(min + math.clamp(dsp+(d/w),0,1)*(max-min)+0.5))
+            end
+        end)
+        local bConn2 = UIS.InputEnded:Connect(function(input)
+            if sliding and (input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch) then sliding=false end
+        end)
+        table.insert(W._connections, bConn1)
+        table.insert(W._connections, bConn2)
+        local so = {Frame=row, Get=function() return val end, Set=function(_,v,silent) apply(v, silent) end}
+        W.Modules[name] = so; return so
+    end
+    
+    makeBuiltinSlider("FOV", 70, 120, 70, function(v) workspace.CurrentCamera.FieldOfView = v end)
+    makeBuiltinSlider("UI Transparency", 0, 70, 0, function(v) W.UITransparencyVal = v; W:ApplyUITransparency(v/100) end)
+    makeBuiltinSlider("UI Scale", 70, 150, 100, function(v)
+        W.UIScaleVal = v/100
+        for _,s in ipairs(W.ColumnScales) do if s and s.Parent then s.Scale = W.UIScaleVal end end
+        W.HUDScale.Scale = W.UIScaleVal
+    end)
+    
+    -- Divider
+    local d3 = Instance.new("Frame"); d3.Size = UDim2.new(1,-20,0,1); d3.Position = UDim2.new(0,10,0,0)
+    d3.BackgroundColor3 = Color3.fromRGB(35,35,42); d3.BorderSizePixel = 0; d3.ZIndex = 11; d3.Parent = themeCol.List
+    
+    -- LAYOUT header
+    local sl3 = Instance.new("TextLabel"); sl3.Size = UDim2.new(1,-20,0,16); sl3.Position = UDim2.new(0,10,0,0)
+    sl3.BackgroundTransparency = 1; sl3.Text = "LAYOUT"; sl3.TextColor3 = W.CurrentAccent
+    sl3.Font = W.CurrentFont; sl3.TextSize = 9; sl3.TextXAlignment = Enum.TextXAlignment.Left
+    sl3.ZIndex = 11; sl3.Parent = themeCol.List
+    table.insert(W.FontedElements, sl3); table.insert(W.TitleLabels, sl3)
+    
+    makeBuiltinSlider("Column Width", 120, 240, 152, function(v) reflowColumns(v) end)
+    
+    -- ============================================================
+    -- CINEMATIC INTRO & INITIAL STATE
+    -- ============================================================
+    W.UIOpen = false
+    W.HUDFrame.Position = UDim2.new(0, -210, 0, 70)
+    W.HUDFrame.Visible = false
+    for _, col in pairs(W.AllColumns) do
+        col.Frame.Visible = false
+        col.Frame.Position = UDim2.new(col.Frame.Position.X.Scale, col.Frame.Position.X.Offset - (W._currentColW + 40), col.Frame.Position.Y.Scale, col.Frame.Position.Y.Offset)
+    end
+
+    W.Backdrop.Visible = true
+    TS:Create(W.Backdrop, TweenInfo.new(0.5), {BackgroundTransparency = 0.55}):Play()
+
+    local introContainer = Instance.new("Frame")
+    introContainer.Size = UDim2.new(0, 240, 0, 80)
+    introContainer.Position = UDim2.new(0.5, 0, 0.5, 20)
+    introContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+    introContainer.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+    introContainer.BackgroundTransparency = 1
+    introContainer.BorderSizePixel = 0
+    introContainer.ZIndex = 1000
+    introContainer.Parent = W.ScreenGui
+    Cr(introContainer, 6)
+    
+    local introStroke = Instance.new("UIStroke", introContainer)
+    introStroke.Color = W.CurrentAccent
+    introStroke.Transparency = 1
+
+    local introTitle = Instance.new("TextLabel", introContainer)
+    introTitle.Size = UDim2.new(0, 100, 0, 30)
+    introTitle.Position = UDim2.new(0, 20, 1, -40)
+    introTitle.BackgroundTransparency = 1
+    introTitle.Text = config.Name or "NexaUI"
+    introTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    introTitle.Font = W.CurrentFont
+    introTitle.TextSize = 18
+    introTitle.TextXAlignment = Enum.TextXAlignment.Left
+    introTitle.TextTransparency = 1
+    introTitle.ZIndex = 1001
+
+    local introMsg = Instance.new("TextLabel", introContainer)
+    introMsg.Size = UDim2.new(1, -40, 0, 20)
+    introMsg.Position = UDim2.new(0, 20, 0, 15)
+    introMsg.BackgroundTransparency = 1
+    introMsg.Text = "Initializing Environment..."
+    introMsg.TextColor3 = Color3.fromRGB(160, 160, 170)
+    introMsg.Font = W.CurrentFont
+    introMsg.TextSize = 12
+    introMsg.TextXAlignment = Enum.TextXAlignment.Left
+    introMsg.TextTransparency = 1
+    introMsg.ZIndex = 1001
+
+    local introStar = Instance.new("TextLabel", introContainer)
+    introStar.Size = UDim2.new(0, 30, 0, 30)
+    introStar.Position = UDim2.new(1, -50, 1, -40)
+    introStar.BackgroundTransparency = 1
+    introStar.Text = "❖"
+    introStar.TextColor3 = W.CurrentAccent
+    introStar.Font = Enum.Font.Gotham
+    introStar.TextSize = 24
+    introStar.TextTransparency = 1
+    introStar.ZIndex = 1002
+
+    task.spawn(function()
+        TS:Create(introContainer, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundTransparency = 0}):Play()
+        TS:Create(introStroke, TweenInfo.new(0.5), {Transparency = 0}):Play()
+        task.wait(0.3)
+        TS:Create(introTitle, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+        TS:Create(introMsg, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+        TS:Create(introStar, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+        
+        task.wait(2.6)
+
+        TS:Create(introTitle, TweenInfo.new(0.4), {TextTransparency = 1, Position = UDim2.new(0, 0, 1, -40)}):Play()
+        TS:Create(introMsg, TweenInfo.new(0.4), {TextTransparency = 1, Position = UDim2.new(0, 0, 0, 15)}):Play()
+        TS:Create(introContainer, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut), {Size = UDim2.new(0, 80, 0, 80), BackgroundTransparency = 1}):Play()
+        TS:Create(introStroke, TweenInfo.new(0.5), {Transparency = 1}):Play()
+        
+        TS:Create(introStar, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut), {Position = UDim2.new(0.5, -15, 0.5, -15), TextSize = 36}):Play()
+        task.wait(0.5)
+        
+        local spinTween = TS:Create(introStar, TweenInfo.new(1.2, Enum.EasingStyle.Back, Enum.EasingDirection.InOut), {Rotation = 720})
+        spinTween:Play()
+        spinTween.Completed:Wait()
+
+        local orbCount = 8
+        for i = 1, orbCount do
+            local angle = (math.pi * 2 / orbCount) * i
+            local orb = Instance.new("Frame", introContainer)
+            orb.Size = UDim2.new(0, 6, 0, 6)
+            orb.AnchorPoint = Vector2.new(0.5, 0.5)
+            orb.Position = UDim2.new(0.5, 0, 0.5, 0)
+            orb.BackgroundColor3 = W.CurrentAccent
+            orb.BorderSizePixel = 0
+            orb.ZIndex = 999
+            Cr(orb, 100)
+            
+            local targetX = math.cos(angle) * 80
+            local targetY = math.sin(angle) * 80
+            
+            TS:Create(orb, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, targetX, 0.5, targetY), BackgroundTransparency = 1, Size = UDim2.new(0, 2, 0, 2)}):Play()
+            task.delay(0.5, function() orb:Destroy() end)
+        end
+
+        TS:Create(introStar, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {TextSize = 0, TextTransparency = 1, Rotation = 1080}):Play()
+        task.wait(0.3)
+        
+        introContainer:Destroy()
+        
+        W:ToggleUI()
+        
+        if W.BreathingEnabled then W:StartBreathing() end
+        W:_UpdateHUD()
+        W:Notify({Title = config.Name or "NexaUI", Content = "Loaded. Press " .. W.KeybindToggle.Name .. " to toggle.", Type = "success", Duration = 5})
+    end)
+    
+    NexaUI._lastWindow = W
+    return W
+end
+
+function NexaUI:Destroy()
+    if self._lastWindow then self._lastWindow:Destroy() end
+end
+
+function NexaUI:Notify(opts)
+    if self._lastWindow then self._lastWindow:Notify(opts) end
+end
+
+function NexaUI:SaveConfig(name)
+    if self._lastWindow then self._lastWindow:SaveConfig(name) end
+end
+
+function NexaUI:LoadConfig(name)
+    if self._lastWindow then self._lastWindow:LoadConfig(name) end
+end
+
+function NexaUI:SetConfigName(name)
+    if self._lastWindow then self._lastWindow:SetConfigName(name) end
+end
+
+function NexaUI:Toggle()
+    if self._lastWindow then self._lastWindow:ToggleUI() end
+end
+
+return NexaUI
