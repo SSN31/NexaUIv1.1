@@ -1,0 +1,1522 @@
+--[[
+    NexaUI v2
+    Sidebar + pages. Searchable selector instead of dropdown columns.
+    Drop-in compatible with v1 scripts: same CreateWindow/CreateTab/CreateSection/
+    CreateDivider/CreateToggle/CreateButton/CreateSlider/CreateDropdown/CreateLabel/
+    CreateInput/CreateParagraph, same Window.Modules Get/Set, same
+    NexaUI:Notify/SaveConfig/LoadConfig/Destroy/Toggle.
+    Usage:
+        local NexaUI = loadstring(readfile("path/to/NexaUIv2.txt"))()
+        local Window = NexaUI:CreateWindow({
+            Name = "My Script",
+            Theme = {
+                Accent = Color3.fromRGB(180, 100, 200),
+                Font = Enum.Font.Gotham,
+                BreathingEffect = true,
+                NotificationPosition = "Top-Right",
+                UITransparency = 0,
+                UIScale = 100,
+            }
+        })
+        local Tab = Window:CreateTab({Name = "Main", Icon = "◆"})
+        Tab:CreateSection("SECTION NAME")
+        Tab:CreateToggle({Name = "My Toggle", Default = false, Callback = function(v) end})
+        Tab:CreateSlider({Name = "My Slider", Min = 0, Max = 100, Default = 50, Callback = function(v) end})
+        Tab:CreateButton({Name = "My Button", Callback = function() end})
+        Tab:CreateDropdown({Name = "My Pick", Options = {"A","B"}, Default = "A", Callback = function(v) end})
+        Tab:CreateLabel({Text = "Hello"})
+        Tab:CreateInput({Name = "My Input", PlaceholderText = "Type here", Callback = function(t) end})
+        Tab:CreateParagraph({Title = "T", Content = "C"})
+        NexaUI:SaveConfig("ConfigName")
+        NexaUI:LoadConfig("ConfigName")
+        NexaUI:Notify({Title = "Title", Content = "Content", Duration = 5})
+        NexaUI:Destroy()
+--]]
+
+local NexaUI = {}
+NexaUI.__index = NexaUI
+NexaUI.Version = "2.0"
+
+local RS = game:GetService("RunService")
+local PS = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TS = game:GetService("TweenService")
+local HS = game:GetService("HttpService")
+local plr = PS.LocalPlayer
+
+local AccentPresets = {
+    Purple  = Color3.fromRGB(180, 100, 200),
+    Red     = Color3.fromRGB(230, 70, 90),
+    Blue    = Color3.fromRGB(80, 140, 230),
+    Green   = Color3.fromRGB(80, 220, 130),
+    Cyan    = Color3.fromRGB(80, 220, 220),
+    Pink    = Color3.fromRGB(240, 120, 200),
+    Gold    = Color3.fromRGB(240, 180, 60),
+    White   = Color3.fromRGB(230, 230, 240),
+}
+local AccentNames = {"Purple","Red","Blue","Green","Cyan","Pink","Gold","White"}
+local FontPresets = {
+    Gotham = Enum.Font.Gotham, Code = Enum.Font.Code,
+    RobotoMono = Enum.Font.RobotoMono, Ubuntu = Enum.Font.Ubuntu,
+    SourceSans = Enum.Font.SourceSans, Arcade = Enum.Font.Arcade,
+}
+local FontNames = {"Gotham","Code","RobotoMono","Ubuntu","SourceSans","Arcade"}
+local NotifPositions = {"Top-Right","Top-Left","Top-Center","Bottom-Right"}
+
+local KeyNameToCode = {}
+for _, kc in ipairs(Enum.KeyCode:GetEnumItems()) do
+    KeyNameToCode[kc.Name] = kc
+end
+
+local function Darken(c, f) return Color3.new(c.R*f, c.G*f, c.B*f) end
+local function Lighten(c, f)
+    return Color3.new(
+        math.min(c.R+(1-c.R)*f,1), math.min(c.G+(1-c.G)*f,1), math.min(c.B+(1-c.B)*f,1))
+end
+local function EnabledBg(accent)
+    local b = Color3.fromRGB(20,20,24)
+    return Color3.new(b.R*0.8+accent.R*0.2, b.G*0.8+accent.G*0.2, b.B*0.8+accent.B*0.2)
+end
+local function Cr(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,r or 4); c.Parent = p; return c end
+
+local ROW_BG = Color3.fromRGB(20,20,24)
+local ROW_BG_HOVER = Color3.fromRGB(28,28,34)
+local BORDER = Color3.fromRGB(35,35,42)
+local TXT_DIM = Color3.fromRGB(160,160,170)
+local TXT_FAINT = Color3.fromRGB(110,110,120)
+local NOTIF_W = 320
+local NOTIF_H = 48
+
+-- ============================================================
+-- CREATE WINDOW
+-- ============================================================
+function NexaUI:CreateWindow(config)
+    config = config or {}
+    local theme = config.Theme or {}
+
+    local W = setmetatable({}, {__index = NexaUI})
+
+    W.CurrentAccent = theme.Accent or AccentPresets.Purple
+    W.CurrentAccentName = "Purple"
+    if typeof(theme.Accent) == "string" and AccentPresets[theme.Accent] then
+        W.CurrentAccentName = theme.Accent
+        W.CurrentAccent = AccentPresets[theme.Accent]
+    end
+    W.CurrentFont = theme.Font or Enum.Font.Gotham
+    W.CurrentFontName = "Gotham"
+    for n,f in pairs(FontPresets) do if f == W.CurrentFont then W.CurrentFontName = n break end end
+    W.BreathingEnabled = theme.BreathingEffect or false
+    W.CurrentNotifPos = theme.NotificationPosition or "Top-Right"
+    W.UITransparencyVal = theme.UITransparency or 0
+    W.UIScaleVal = (theme.UIScale or 100) / 100
+    W.KeybindToggle = theme.Keybind or Enum.KeyCode.RightShift
+    if typeof(W.KeybindToggle) == "string" then
+        W.KeybindToggle = KeyNameToCode[W.KeybindToggle] or Enum.KeyCode.RightShift
+    end
+    W.UIOpen = true
+    W.ToggleAnimating = false
+    W.Compact = false
+    W.Modules = {}
+    W.UIStrokes = {}
+    W.Keybinds = {}
+    W.ActiveNotifs = {}
+    W.ConfigFolder = "NexaHub_Configs"
+    W._configName = "Default"
+    W._connections = {}
+    W._updaters = {}
+    W._fonted = {}
+    W._accentTexts = {}
+    W._sectionTitles = {}
+    W._pageBtns = {}
+    W._searchIdx = {}
+    W._pages = {}
+    W._activePage = 1
+    W._breathConn = nil
+    W.NotifColors = {
+        info = {bg = Color3.fromRGB(18,18,26), bar = Color3.fromRGB(96,165,255)},
+        success = {bg = Color3.fromRGB(16,24,18), bar = Color3.fromRGB(96,216,118)},
+        warning = {bg = Color3.fromRGB(26,22,14), bar = Color3.fromRGB(255,176,32)},
+        alert = {bg = Color3.fromRGB(28,16,16), bar = Color3.fromRGB(255,76,76)},
+    }
+
+    -- ScreenGui
+    W.ScreenGui = Instance.new("ScreenGui")
+    W.ScreenGui.Name = "NexaHub_Yurei"
+    W.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    W.ScreenGui.ResetOnSpawn = false
+    W.ScreenGui.DisplayOrder = 999
+    local secureParent = (pcall(function() return gethui() end) and gethui()) or game:GetService("CoreGui")
+    if not secureParent then secureParent = plr:WaitForChild("PlayerGui") end
+    W.ScreenGui.IgnoreGuiInset = true
+    W.ScreenGui.Parent = secureParent
+
+    -- Watermark
+    local wm = Instance.new("TextLabel")
+    wm.Name = "Watermark"; wm.AnchorPoint = Vector2.new(1,1)
+    wm.Position = UDim2.new(1,-12,1,-12); wm.Size = UDim2.new(0,220,0,22)
+    wm.BackgroundTransparency = 1
+    wm.Text = "NexaUI v2 • " .. (config.Name or "Script")
+    wm.TextColor3 = Color3.fromRGB(235,235,245); wm.TextTransparency = 0.45
+    wm.Font = Enum.Font.GothamMedium; wm.TextSize = 14
+    wm.TextXAlignment = Enum.TextXAlignment.Right
+    wm.ZIndex = 1000; wm.Parent = W.ScreenGui
+    local wms = Instance.new("UIStroke"); wms.Color = Color3.new(0,0,0); wms.Thickness = 1; wms.Transparency = 0.7; wms.Parent = wm
+
+    -- Backdrop
+    W.Backdrop = Instance.new("Frame")
+    W.Backdrop.Name = "Backdrop"
+    W.Backdrop.Size = UDim2.new(1, 0, 1, 0)
+    W.Backdrop.BackgroundColor3 = Color3.new(0,0,0)
+    W.Backdrop.BackgroundTransparency = 0.55
+    W.Backdrop.BorderSizePixel = 0
+    W.Backdrop.ZIndex = 1
+    W.Backdrop.Visible = false
+    W.Backdrop.Parent = W.ScreenGui
+
+    -- Main window
+    local win = Instance.new("Frame")
+    win.Name = "Window"
+    win.AnchorPoint = Vector2.new(0.5, 0.5)
+    win.Position = UDim2.new(0.5, 0, 0.5, 0)
+    win.Size = UDim2.new(0, 680, 0, 440)
+    win.BackgroundColor3 = Color3.fromRGB(14,14,18)
+    win.BorderSizePixel = 0
+    win.ZIndex = 10
+    win.Parent = W.ScreenGui
+    Cr(win, 8)
+    W.WindowFrame = win
+    local winStroke = Instance.new("UIStroke", win)
+    winStroke.Color = W.CurrentAccent; winStroke.Thickness = 1; winStroke.Transparency = 0.35
+    W._accentStroke = winStroke
+    local winScale = Instance.new("UIScale", win)
+    winScale.Scale = W.UIScaleVal
+    W.WindowScale = winScale
+    local winConstraint = Instance.new("UISizeConstraint", win)
+    winConstraint.MinSize = Vector2.new(420, 300)
+
+    -- Title bar
+    local titlebar = Instance.new("Frame")
+    titlebar.Name = "Titlebar"
+    titlebar.Size = UDim2.new(1, 0, 0, 44)
+    titlebar.BackgroundColor3 = Color3.fromRGB(18,18,24)
+    titlebar.BorderSizePixel = 0
+    titlebar.ZIndex = 11
+    titlebar.Parent = win
+    local titleIcon = Instance.new("TextLabel")
+    titleIcon.Size = UDim2.new(0, 34, 1, 0)
+    titleIcon.BackgroundTransparency = 1
+    titleIcon.Text = "❖"
+    titleIcon.TextColor3 = W.CurrentAccent
+    titleIcon.Font = Enum.Font.GothamBold; titleIcon.TextSize = 18
+    titleIcon.ZIndex = 12; titleIcon.Parent = titlebar
+    table.insert(W._fonted, titleIcon)
+    W._titleIcon = titleIcon
+    local titleLbl = Instance.new("TextLabel")
+    titleLbl.Size = UDim2.new(0, 180, 1, 0)
+    titleLbl.Position = UDim2.new(0, 34, 0, 0)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text = config.Name or "NexaUI"
+    titleLbl.TextColor3 = Color3.fromRGB(235,235,245)
+    titleLbl.Font = W.CurrentFont; titleLbl.TextSize = 14
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+    titleLbl.ZIndex = 12; titleLbl.Parent = titlebar
+    table.insert(W._fonted, titleLbl)
+    -- Search box
+    local searchBox = Instance.new("TextBox")
+    searchBox.Name = "Search"
+    searchBox.Size = UDim2.new(1, -300, 0, 26)
+    searchBox.Position = UDim2.new(0, 214, 0, 9)
+    searchBox.BackgroundColor3 = Color3.fromRGB(22,22,28)
+    searchBox.Text = ""; searchBox.PlaceholderText = "Search..."
+    searchBox.PlaceholderColor3 = Color3.fromRGB(100,100,110)
+    searchBox.TextColor3 = Color3.fromRGB(210,210,220)
+    searchBox.Font = W.CurrentFont; searchBox.TextSize = 12
+    searchBox.TextXAlignment = Enum.TextXAlignment.Left
+    searchBox.ClearTextOnFocus = false
+    searchBox.BorderSizePixel = 0; searchBox.ZIndex = 12; searchBox.Parent = titlebar
+    Cr(searchBox, 5)
+    local searchPad = Instance.new("UIPadding", searchBox)
+    searchPad.PaddingLeft = UDim.new(0, 10); searchPad.PaddingRight = UDim.new(0, 10)
+    table.insert(W._fonted, searchBox)
+    W._searchBox = searchBox
+    local searchStroke = Instance.new("UIStroke", searchBox)
+    searchStroke.Color = BORDER; searchStroke.Thickness = 1
+    -- Toggle (hide) button
+    local hideBtn = Instance.new("TextButton")
+    hideBtn.Size = UDim2.new(0, 30, 0, 26)
+    hideBtn.Position = UDim2.new(1, -40, 0, 9)
+    hideBtn.BackgroundColor3 = Color3.fromRGB(22,22,28)
+    hideBtn.Text = "–"; hideBtn.TextColor3 = TXT_DIM
+    hideBtn.Font = Enum.Font.GothamBold; hideBtn.TextSize = 16
+    hideBtn.BorderSizePixel = 0; hideBtn.ZIndex = 12; hideBtn.Parent = titlebar
+    Cr(hideBtn, 5)
+    hideBtn.MouseButton1Click:Connect(function() W:ToggleUI() end)
+
+    -- Sidebar
+    local sidebar = Instance.new("Frame")
+    sidebar.Name = "Sidebar"
+    sidebar.Size = UDim2.new(0, 150, 1, -44)
+    sidebar.Position = UDim2.new(0, 0, 0, 44)
+    sidebar.BackgroundColor3 = Color3.fromRGB(16,16,21)
+    sidebar.BorderSizePixel = 0
+    sidebar.ZIndex = 11
+    sidebar.Parent = win
+    W.Sidebar = sidebar
+    local sideList = Instance.new("UIListLayout", sidebar)
+    sideList.SortOrder = Enum.SortOrder.LayoutOrder
+    sideList.Padding = UDim.new(0, 4)
+    local sidePad = Instance.new("UIPadding", sidebar)
+    sidePad.PaddingTop = UDim.new(0, 8); sidePad.PaddingLeft = UDim.new(0, 8)
+    sidePad.PaddingRight = UDim.new(0, 8)
+
+    -- Content holder
+    local content = Instance.new("Frame")
+    content.Name = "Content"
+    content.Size = UDim2.new(1, -150, 1, -44)
+    content.Position = UDim2.new(0, 150, 0, 44)
+    content.BackgroundTransparency = 1
+    content.BorderSizePixel = 0
+    content.ZIndex = 11
+    content.ClipsDescendants = true
+    content.Parent = win
+    W.Content = content
+
+    -- Group transparency wrapper via CanvasGroup-like fade: tween a proxy value
+    -- (kept simple: fade backdrop + window group transparency field)
+    W._fade = 0
+
+    -- Dragging (title bar, mouse + touch)
+    local dragging, dragStart, startPos = false, nil, nil
+    titlebar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = win.Position
+        end
+    end)
+    local dragConn = UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    local dragEnd = UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    W._connections = {dragConn, dragEnd}
+
+    -- Floating open button (mobile friendly)
+    local openBtn = Instance.new("TextButton")
+    openBtn.Name = "OpenButton"
+    openBtn.Size = UDim2.new(0, 46, 0, 46)
+    openBtn.Position = UDim2.new(1, -60, 1, -120)
+    openBtn.BackgroundColor3 = Color3.fromRGB(18,18,24)
+    openBtn.Text = "N"; openBtn.TextColor3 = W.CurrentAccent
+    openBtn.Font = Enum.Font.GothamBold; openBtn.TextSize = 20
+    openBtn.BorderSizePixel = 0; openBtn.ZIndex = 999
+    openBtn.Visible = false
+    openBtn.Parent = W.ScreenGui
+    Cr(openBtn, 23)
+    local openStroke = Instance.new("UIStroke", openBtn)
+    openStroke.Color = W.CurrentAccent; openStroke.Thickness = 1.5
+    openBtn.MouseButton1Click:Connect(function() W:ToggleUI() end)
+    W.OpenButton = openBtn
+    W._openStroke = openStroke
+    -- drag the open button too
+    local obDrag, obStart, obPos = false, nil, nil
+    openBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            obDrag = true; obStart = input.Position; obPos = openBtn.Position
+        end
+    end)
+    local obMove = UIS.InputChanged:Connect(function(input)
+        if obDrag and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - obStart
+            openBtn.Position = UDim2.new(obPos.X.Scale, obPos.X.Offset + d.X, obPos.Y.Scale, obPos.Y.Offset + d.Y)
+        end
+    end)
+    local obEnd = UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            if obDrag then obDrag = false end
+        end
+    end)
+    table.insert(W._connections, obMove)
+    table.insert(W._connections, obEnd)
+
+    -- Context menu (per-module keybinds)
+    W.ContextMenu = Instance.new("Frame")
+    W.ContextMenu.Size = UDim2.new(0, 170, 0, 0)
+    W.ContextMenu.AutomaticSize = Enum.AutomaticSize.Y
+    W.ContextMenu.BackgroundColor3 = Color3.fromRGB(16, 16, 24)
+    W.ContextMenu.BorderSizePixel = 0
+    W.ContextMenu.Visible = false
+    W.ContextMenu.ZIndex = 700
+    W.ContextMenu.Parent = W.ScreenGui
+    Cr(W.ContextMenu, 6)
+    local cmStroke = Instance.new("UIStroke", W.ContextMenu)
+    cmStroke.Color = W.CurrentAccent
+    Instance.new("UIListLayout", W.ContextMenu).Padding = UDim.new(0, 2)
+    local cmPad = Instance.new("UIPadding", W.ContextMenu)
+    cmPad.PaddingTop = UDim.new(0,4); cmPad.PaddingBottom = UDim.new(0,4)
+    cmPad.PaddingLeft = UDim.new(0,4); cmPad.PaddingRight = UDim.new(0,4)
+
+    function W:HideContextMenu()
+        W.ContextMenu.Visible = false
+        for _,c in pairs(W.ContextMenu:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+        end
+    end
+
+    function W:ShowContextMenu(options, position)
+        W:HideContextMenu()
+        for _,opt in ipairs(options) do
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, 0, 0, 26)
+            btn.BackgroundColor3 = Color3.fromRGB(24,24,36); btn.Text = "  "..opt.Label
+            btn.TextColor3 = opt.Color or Color3.fromRGB(200,200,200); btn.Font = W.CurrentFont
+            btn.TextSize = 11; btn.TextXAlignment = Enum.TextXAlignment.Left
+            btn.BorderSizePixel = 0; btn.AutoButtonColor = false; btn.ZIndex = 701
+            btn.Parent = W.ContextMenu; Cr(btn,3)
+            table.insert(W._fonted, btn)
+            btn.MouseEnter:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(40,25,55) end)
+            btn.MouseLeave:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(24,24,32) end)
+            btn.MouseButton1Click:Connect(function()
+                W:HideContextMenu()
+                if opt.Callback then task.spawn(opt.Callback) end
+            end)
+        end
+        W.ContextMenu.Position = UDim2.new(0, position.X, 0, position.Y)
+        W.ContextMenu.Visible = true
+    end
+
+    -- Selector popup (replaces dropdown columns): searchable centered list
+    local selCatcher = Instance.new("TextButton")
+    selCatcher.Name = "SelectCatcher"
+    selCatcher.Size = UDim2.new(1, 0, 1, 0)
+    selCatcher.BackgroundColor3 = Color3.new(0,0,0)
+    selCatcher.BackgroundTransparency = 0.5
+    selCatcher.Text = ""; selCatcher.AutoButtonColor = false
+    selCatcher.ZIndex = 600; selCatcher.Visible = false
+    selCatcher.Parent = W.ScreenGui
+    local selPanel = Instance.new("Frame")
+    selPanel.Name = "SelectPanel"
+    selPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+    selPanel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    selPanel.Size = UDim2.new(0, 300, 0, 340)
+    selPanel.BackgroundColor3 = Color3.fromRGB(16,16,22)
+    selPanel.BorderSizePixel = 0; selPanel.ZIndex = 601
+    selPanel.Visible = false; selPanel.Parent = W.ScreenGui
+    Cr(selPanel, 8)
+    local selStroke = Instance.new("UIStroke", selPanel)
+    selStroke.Color = W.CurrentAccent
+    local selTitle = Instance.new("TextLabel")
+    selTitle.Size = UDim2.new(1, -50, 0, 30)
+    selTitle.Position = UDim2.new(0, 12, 0, 6)
+    selTitle.BackgroundTransparency = 1
+    selTitle.Text = "Select"; selTitle.TextColor3 = Color3.fromRGB(235,235,245)
+    selTitle.Font = W.CurrentFont; selTitle.TextSize = 13
+    selTitle.TextXAlignment = Enum.TextXAlignment.Left
+    selTitle.ZIndex = 602; selTitle.Parent = selPanel
+    table.insert(W._fonted, selTitle)
+    local selClose = Instance.new("TextButton")
+    selClose.Size = UDim2.new(0, 26, 0, 26)
+    selClose.Position = UDim2.new(1, -32, 0, 6)
+    selClose.BackgroundTransparency = 1
+    selClose.Text = "✕"; selClose.TextColor3 = TXT_DIM
+    selClose.Font = Enum.Font.GothamBold; selClose.TextSize = 14
+    selClose.ZIndex = 602; selClose.Parent = selPanel
+    local selSearch = Instance.new("TextBox")
+    selSearch.Size = UDim2.new(1, -24, 0, 28)
+    selSearch.Position = UDim2.new(0, 12, 0, 40)
+    selSearch.BackgroundColor3 = Color3.fromRGB(22,22,28)
+    selSearch.Text = ""; selSearch.PlaceholderText = "Type to filter..."
+    selSearch.PlaceholderColor3 = Color3.fromRGB(100,100,110)
+    selSearch.TextColor3 = Color3.fromRGB(210,210,220)
+    selSearch.Font = W.CurrentFont; selSearch.TextSize = 12
+    selSearch.TextXAlignment = Enum.TextXAlignment.Left
+    selSearch.ClearTextOnFocus = false
+    selSearch.BorderSizePixel = 0; selSearch.ZIndex = 602; selSearch.Parent = selPanel
+    Cr(selSearch, 5)
+    local selPad = Instance.new("UIPadding", selSearch)
+    selPad.PaddingLeft = UDim.new(0, 10); selPad.PaddingRight = UDim.new(0, 10)
+    table.insert(W._fonted, selSearch)
+    local selScroll = Instance.new("ScrollingFrame")
+    selScroll.Size = UDim2.new(1, -24, 1, -116)
+    selScroll.Position = UDim2.new(0, 12, 0, 76)
+    selScroll.BackgroundTransparency = 1
+    selScroll.BorderSizePixel = 0
+    selScroll.ScrollBarThickness = 3
+    selScroll.ScrollBarImageColor3 = Color3.fromRGB(60,60,70)
+    selScroll.ZIndex = 602; selScroll.Parent = selPanel
+    selScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    selScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    local selLayout = Instance.new("UIListLayout", selScroll)
+    selLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    selLayout.Padding = UDim.new(0, 4)
+    W._selector = { catcher = selCatcher, panel = selPanel, title = selTitle,
+        search = selSearch, scroll = selScroll, openFor = nil, optionBtns = {} }
+    local function closeSelector()
+        selCatcher.Visible = false
+        selPanel.Visible = false
+        W._selector.openFor = nil
+    end
+    W._closeSelector = closeSelector
+    selClose.MouseButton1Click:Connect(closeSelector)
+    selCatcher.MouseButton1Click:Connect(closeSelector)
+
+    function W:OpenSelector(mod)
+        local sel = W._selector
+        sel.openFor = mod
+        sel.title.Text = mod._selectTitle or "Select"
+        sel.search.Text = ""
+        for _,b in ipairs(sel.optionBtns) do b:Destroy() end
+        sel.optionBtns = {}
+        local rowH = W.Compact and 34 or 28
+        for _,opt in ipairs(mod._selectOptions or {}) do
+            local ob = Instance.new("TextButton")
+            ob.Size = UDim2.new(1, -4, 0, rowH)
+            ob.BackgroundColor3 = (opt == mod:Get()) and EnabledBg(W.CurrentAccent) or ROW_BG
+            ob.Text = "  " .. tostring(opt)
+            ob.TextColor3 = (opt == mod:Get()) and Lighten(W.CurrentAccent, 0.4) or Color3.fromRGB(200,200,200)
+            ob.Font = W.CurrentFont; ob.TextSize = 12
+            ob.TextXAlignment = Enum.TextXAlignment.Left
+            ob.BorderSizePixel = 0; ob.AutoButtonColor = false
+            ob.ZIndex = 603; ob.Parent = sel.scroll; ob.LayoutOrder = #sel.scroll:GetChildren()
+            Cr(ob, 4)
+            table.insert(W._fonted, ob)
+            table.insert(sel.optionBtns, ob)
+            ob.MouseButton1Click:Connect(function()
+                mod:Set(opt)
+                if mod._selectCb then task.spawn(mod._selectCb, opt) end
+                closeSelector()
+            end)
+        end
+        selCatcher.Visible = true
+        selPanel.Visible = true
+        task.defer(function() selSearch:CaptureFocus() end)
+    end
+    selSearch:GetPropertyChangedSignal("Text"):Connect(function()
+        local q = selSearch.Text:lower()
+        for _,ob in ipairs(W._selector.optionBtns) do
+            ob.Visible = (q == "") or (ob.Text:lower():find(q, 1, true) ~= nil)
+        end
+    end)
+
+    -- HUD (enabled toggles)
+    local hud = Instance.new("Frame")
+    hud.Name = "HUDFrame"
+    hud.Size = UDim2.new(0, 200, 0, 0)
+    hud.AutomaticSize = Enum.AutomaticSize.Y
+    hud.Position = UDim2.new(0, 10, 0, 10)
+    hud.BackgroundTransparency = 1
+    hud.BorderSizePixel = 0
+    hud.ZIndex = 5
+    hud.Visible = false
+    hud.Parent = W.ScreenGui
+    local hudList = Instance.new("UIListLayout", hud)
+    hudList.SortOrder = Enum.SortOrder.LayoutOrder
+    hudList.Padding = UDim.new(0, 2)
+    W.HUDFrame = hud
+    W.HUDList = hud
+
+    function W:_UpdateHUD()
+        for _,c in pairs(W.HUDList:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+        for name,mod in pairs(W.Modules) do
+            if mod.Get and type(mod:Get()) == "boolean" and mod:Get() == true then
+                local l = Instance.new("TextLabel")
+                l.Size = UDim2.new(0, 200, 0, 16)
+                l.BackgroundColor3 = Color3.fromRGB(14,14,18)
+                l.BackgroundTransparency = 0.3
+                l.Text = "  " .. name
+                l.TextColor3 = W.CurrentAccent
+                l.Font = W.CurrentFont; l.TextSize = 10
+                l.TextXAlignment = Enum.TextXAlignment.Left
+                l.BorderSizePixel = 0; l.ZIndex = 5; l.Parent = W.HUDList
+                Cr(l, 3)
+                table.insert(W._fonted, l)
+            end
+        end
+    end
+
+    -- Accent / font / transparency application
+    function W:ApplyAccentColor()
+        winStroke.Color = W.CurrentAccent
+        titleIcon.TextColor = W.CurrentAccent
+        openBtn.TextColor = W.CurrentAccent
+        openStroke.Color = W.CurrentAccent
+        selStroke.Color = W.CurrentAccent
+        cmStroke.Color = W.CurrentAccent
+        for _,u in ipairs(W._updaters) do pcall(u) end
+        for _,b in ipairs(W._pageBtns or {}) do
+            if b._active then
+                b._label.TextColor = Lighten(W.CurrentAccent, 0.4)
+                b._frame.BackgroundColor3 = EnabledBg(W.CurrentAccent)
+                b._bar.BackgroundColor3 = W.CurrentAccent
+            end
+        end
+    end
+
+    function W:ApplyFont()
+        for _,e in ipairs(W._fonted) do
+            pcall(function()
+                if e:IsA("TextLabel") or e:IsA("TextButton") or e:IsA("TextBox") then
+                    e.Font = W.CurrentFont
+                end
+            end)
+        end
+    end
+
+    function W:ApplyUITransparency(t)
+        W.UITransparencyVal = (t or 0) * 100
+        if W.UIOpen then W:RefreshFade() end
+    end
+
+    function W:RefreshFade()
+        local ft = W.UITransparencyVal / 100
+        if W.UIOpen then
+            TS:Create(W.Backdrop, TweenInfo.new(0.25), {BackgroundTransparency = 0.45 + ft * 0.4}):Play()
+        end
+    end
+
+    function W:StartBreathing()
+        if W._breathConn then pcall(function() W._breathConn:Disconnect() end) end
+        W._breathConn = RS.Heartbeat:Connect(function()
+            local s = (math.sin(tick() * 2) + 1) / 2
+            local c = W.CurrentAccent
+            pcall(function()
+                W._accentStroke.Color = Color3.new(
+                    math.min(c.R + (1-c.R)*s*0.4, 1),
+                    math.min(c.G + (1-c.G)*s*0.4, 1),
+                    math.min(c.B + (1-c.B)*s*0.4, 1))
+            end)
+        end)
+    end
+
+    function W:StopBreathing()
+        if W._breathConn then pcall(function() W._breathConn:Disconnect() end) end
+        W._breathConn = nil
+        pcall(function() W._accentStroke.Color = W.CurrentAccent end)
+    end
+
+    -- Open / close
+    function W:ToggleUI()
+        if W.ToggleAnimating then return end
+        W.ToggleAnimating = true
+        W.UIOpen = not W.UIOpen
+        if W.UIOpen then
+            win.Visible = true
+            W.ScreenGui.Enabled = true
+            W.Backdrop.Visible = true
+            openBtn.Visible = false
+            TS:Create(W.Backdrop, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundTransparency = 0.55}):Play()
+            task.delay(0.35, function() W.ToggleAnimating = false end)
+        else
+            TS:Create(W.Backdrop, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {BackgroundTransparency = 1}):Play()
+            task.delay(0.32, function()
+                if not W.UIOpen then
+                    win.Visible = false
+                    W.Backdrop.Visible = false
+                    openBtn.Visible = true
+                    W.ToggleAnimating = false
+                end
+            end)
+        end
+    end
+
+    -- Search filter
+    local function applySearch()
+        local q = searchBox.Text:lower()
+        for _,entry in ipairs(W._searchIdx) do
+            entry.row.Visible = (q == "") or (entry.name:lower():find(q, 1, true) ~= nil)
+        end
+        for i,page in ipairs(W._pages) do
+            local has = false
+            if q ~= "" then
+                for _,entry in ipairs(W._searchIdx) do
+                    if entry.page == i and entry.row.Visible then has = true break end
+                end
+            end
+            if page.dot then page.dot.Visible = has and (i ~= W._activePage) end
+        end
+    end
+    searchBox:GetPropertyChangedSignal("Text"):Connect(applySearch)
+    W._applySearch = applySearch
+
+    function W:_registerSearch(row, name, pageIdx)
+        table.insert(W._searchIdx, {row = row, name = tostring(name), page = pageIdx})
+    end
+
+    -- Page switching
+    W._pageBtns = {}
+    function W:showPage(idx)
+        W._activePage = idx
+        for i,page in ipairs(W._pages) do
+            page.frame.Visible = (i == idx)
+            local btn = W._pageBtns[i]
+            if btn then
+                btn._active = (i == idx)
+                if i == idx then
+                    btn._frame.BackgroundColor3 = EnabledBg(W.CurrentAccent)
+                    btn._label.TextColor = Lighten(W.CurrentAccent, 0.4)
+                    btn._bar.BackgroundColor3 = W.CurrentAccent
+                    btn._bar.Visible = true
+                else
+                    btn._frame.BackgroundColor3 = Color3.fromRGB(16,16,21)
+                    btn._label.TextColor = TXT_DIM
+                    btn._bar.Visible = false
+                end
+            end
+        end
+        W:_applySearch()
+    end
+
+    -- Responsive layout (mobile / small screens)
+    function W:applyResponsive()
+        local cam = Workspace.CurrentCamera
+        local vs = cam and cam.ViewportSize or Vector2.new(1024, 640)
+        local compact = vs.X < 720
+        W.Compact = compact
+        if compact then
+            win.Size = UDim2.new(0.94, 0, 0.8, 0)
+            sidebar.Size = UDim2.new(0, 54, 1, -44)
+            content.Size = UDim2.new(1, -54, 1, -44)
+            content.Position = UDim2.new(0, 54, 0, 44)
+            for _,b in ipairs(W._pageBtns or {}) do
+                b._label.Visible = false
+                b._frame.Size = UDim2.new(1, -16, 0, 40)
+            end
+            searchBox.Size = UDim2.new(1, -280, 0, 28)
+        else
+            win.Size = UDim2.new(0, 680, 0, 440)
+            sidebar.Size = UDim2.new(0, 150, 1, -44)
+            content.Size = UDim2.new(1, -150, 1, -44)
+            content.Position = UDim2.new(0, 150, 0, 44)
+            for _,b in ipairs(W._pageBtns or {}) do
+                b._label.Visible = true
+                b._frame.Size = UDim2.new(1, -16, 0, 32)
+            end
+            searchBox.Size = UDim2.new(1, -300, 0, 26)
+        end
+    end
+    local viewConn = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        task.delay(0.5, function() pcall(function() W:applyResponsive() end) end)
+    end)
+    table.insert(W._connections, viewConn)
+
+    -- ============================================================
+    -- CREATE TAB
+    -- ============================================================
+    function W:CreateTab(tabConfig)
+        if typeof(tabConfig) == "string" then tabConfig = {Name = tabConfig, Icon = "◆"} end
+        tabConfig = tabConfig or {}
+        tabConfig.Name = tabConfig.Name or "Tab"
+        tabConfig.Icon = tabConfig.Icon or "◆"
+        local pageIdx = #W._pages + 1
+
+        -- Sidebar button
+        local sbtn = Instance.new("TextButton")
+        sbtn.Size = UDim2.new(1, -16, 0, 32)
+        sbtn.BackgroundColor3 = Color3.fromRGB(16,16,21)
+        sbtn.Text = ""; sbtn.BorderSizePixel = 0; sbtn.AutoButtonColor = false
+        sbtn.ZIndex = 12; sbtn.Parent = sidebar
+        sbtn.LayoutOrder = pageIdx
+        Cr(sbtn, 5)
+        local sicon = Instance.new("TextLabel")
+        sicon.Size = UDim2.new(0, 30, 1, 0)
+        sicon.BackgroundTransparency = 1
+        sicon.Text = tabConfig.Icon
+        sicon.TextColor3 = TXT_DIM
+        sicon.Font = W.CurrentFont; sicon.TextSize = 14
+        sicon.ZIndex = 13; sicon.Parent = sbtn
+        table.insert(W._fonted, sicon)
+        local slbl = Instance.new("TextLabel")
+        slbl.Size = UDim2.new(1, -32, 1, 0)
+        slbl.Position = UDim2.new(0, 30, 0, 0)
+        slbl.BackgroundTransparency = 1
+        slbl.Text = tabConfig.Name
+        slbl.TextColor3 = TXT_DIM
+        slbl.Font = W.CurrentFont; slbl.TextSize = 12
+        slbl.TextXAlignment = Enum.TextXAlignment.Left
+        slbl.TextTruncate = Enum.TextTruncate.AtEnd
+        slbl.ZIndex = 13; slbl.Parent = sbtn
+        table.insert(W._fonted, slbl)
+        local sbar = Instance.new("Frame")
+        sbar.Size = UDim2.new(0, 3, 0, 20)
+        sbar.Position = UDim2.new(0, 0, 0.5, -10)
+        sbar.BackgroundColor3 = W.CurrentAccent
+        sbar.BorderSizePixel = 0; sbar.Visible = false
+        sbar.ZIndex = 13; sbar.Parent = sbtn
+        Cr(sbar, 2)
+        local sdot = Instance.new("Frame")
+        sdot.Size = UDim2.new(0, 6, 0, 6)
+        sdot.Position = UDim2.new(1, -12, 0, 6)
+        sdot.BackgroundColor3 = W.CurrentAccent
+        sdot.BorderSizePixel = 0; sdot.Visible = false
+        sdot.ZIndex = 13; sdot.Parent = sbtn
+        Cr(sdot, 3)
+        local btnRec = {_frame = sbtn, _label = slbl, _bar = sbar, _active = false}
+        table.insert(W._pageBtns, btnRec)
+        sbtn.MouseButton1Click:Connect(function() W:showPage(pageIdx) end)
+
+        -- Page (scrolling)
+        local page = Instance.new("ScrollingFrame")
+        page.Name = "Page_" .. tabConfig.Name
+        page.Size = UDim2.new(1, 0, 1, 0)
+        page.BackgroundTransparency = 1
+        page.BorderSizePixel = 0
+        page.ScrollBarThickness = 3
+        page.ScrollBarImageColor3 = Color3.fromRGB(60,60,70)
+        page.ZIndex = 11
+        page.Visible = false
+        page.Parent = content
+        page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        page.CanvasSize = UDim2.new(0, 0, 0, 0)
+        local pad = Instance.new("UIPadding", page)
+        pad.PaddingTop = UDim.new(0, 10); pad.PaddingBottom = UDim.new(0, 10)
+        pad.PaddingLeft = UDim.new(0, 12); pad.PaddingRight = UDim.new(0, 12)
+        local layout = Instance.new("UIListLayout", page)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Padding = UDim.new(0, 6)
+        table.insert(W._pages, {frame = page, dot = sdot, name = tabConfig.Name})
+
+        local T = {_page = page, _w = W, _pageIdx = pageIdx}
+        local rowH = function() return W.Compact and 36 or 30 end
+
+        function T:CreateSection(name)
+            local sl = Instance.new("TextLabel")
+            sl.Size = UDim2.new(1, 0, 0, 18)
+            sl.BackgroundTransparency = 1
+            sl.Text = string.upper(name)
+            sl.TextColor3 = self._w.CurrentAccent
+            sl.Font = self._w.CurrentFont; sl.TextSize = 10
+            sl.TextXAlignment = Enum.TextXAlignment.Left
+            sl.ZIndex = 11; sl.Parent = page
+            sl.LayoutOrder = #page:GetChildren()
+            table.insert(self._w._fonted, sl)
+            table.insert(self._w._sectionTitles, sl)
+            return T
+        end
+
+        function T:CreateDivider()
+            local d = Instance.new("Frame")
+            d.Size = UDim2.new(1, 0, 0, 1)
+            d.BackgroundColor3 = BORDER
+            d.BorderSizePixel = 0; d.ZIndex = 11; d.Parent = page
+            d.LayoutOrder = #page:GetChildren()
+            return T
+        end
+
+        local function bindKeyMenu(row, name, getState, setState)
+            row.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton2 then
+                    local kbLabel = self._w.Keybinds[name] or "None"
+                    self._w:ShowContextMenu({
+                        {Label = name, Color = self._w.CurrentAccent},
+                        {Label = getState() and "Disable" or "Enable", Callback = function()
+                            setState(not getState())
+                        end},
+                        {Label = "Bind Key ["..kbLabel.."]", Color = Color3.fromRGB(200,180,100), Callback = function()
+                            self._w:Notify({Title=name,Content="Press any key... (Esc to remove)",Type="info",Duration=3})
+                            local bindConn
+                            bindConn = UIS.InputBegan:Connect(function(input2)
+                                if input2.UserInputType == Enum.UserInputType.Keyboard then
+                                    if input2.KeyCode == Enum.KeyCode.Escape then
+                                        self._w.Keybinds[name] = nil
+                                        self._w:Notify({Title=name,Content="Keybind removed",Type="info",Duration=2})
+                                    else
+                                        self._w.Keybinds[name] = input2.KeyCode.Name
+                                        self._w:Notify({Title=name,Content="Bound to ["..input2.KeyCode.Name.."]",Type="success",Duration=2})
+                                    end
+                                    bindConn:Disconnect()
+                                end
+                            end)
+                        end},
+                    }, input.Position)
+                end
+            end)
+        end
+
+        function T:CreateToggle(opts)
+            local state = opts.Default or false
+            local cb = opts.Callback
+            local row = Instance.new("TextButton")
+            row.Name = "Mod_" .. opts.Name
+            row.Size = UDim2.new(1, 0, 0, rowH())
+            row.BackgroundColor3 = state and EnabledBg(self._w.CurrentAccent) or ROW_BG
+            row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
+            row.ZIndex = 11; row.Parent = page
+            row.LayoutOrder = #page:GetChildren()
+            Cr(row, 5)
+            self._w:_registerSearch(row, opts.Name, self._pageIdx)
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(1, -52, 1, 0)
+            lbl.Position = UDim2.new(0, 12, 0, 0)
+            lbl.BackgroundTransparency = 1; lbl.Text = opts.Name
+            lbl.TextColor3 = state and Lighten(self._w.CurrentAccent, 0.4) or TXT_DIM
+            lbl.Font = self._w.CurrentFont; lbl.TextSize = 12
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.ZIndex = 12; lbl.Parent = row
+            table.insert(self._w._fonted, lbl)
+            local sw = Instance.new("Frame")
+            sw.Name = "Switch"
+            sw.Size = UDim2.new(0, 26, 0, 13)
+            sw.Position = UDim2.new(1, -36, 0.5, -6.5)
+            sw.BackgroundColor3 = state and self._w.CurrentAccent or Color3.fromRGB(45,45,50)
+            sw.BorderSizePixel = 0; sw.ZIndex = 12; sw.Parent = row
+            Cr(sw, 6)
+            local kb = Instance.new("Frame")
+            kb.Name = "Knob"
+            kb.Size = UDim2.new(0, 11, 0, 11)
+            kb.Position = state and UDim2.new(0, 14, 0.5, -5.5) or UDim2.new(0, 1, 0.5, -5.5)
+            kb.BackgroundColor3 = state and Color3.new(1,1,1) or Color3.fromRGB(200,200,200)
+            kb.BorderSizePixel = 0; kb.ZIndex = 13; kb.Parent = sw
+            Cr(kb, 5)
+            local function update()
+                local eb = EnabledBg(self._w.CurrentAccent)
+                row.BackgroundColor3 = state and eb or ROW_BG
+                lbl.TextColor3 = state and Lighten(self._w.CurrentAccent, 0.4) or TXT_DIM
+                sw.BackgroundColor3 = state and self._w.CurrentAccent or Color3.fromRGB(45,45,50)
+                kb.Position = state and UDim2.new(0, 14, 0.5, -5.5) or UDim2.new(0, 1, 0.5, -5.5)
+                kb.BackgroundColor3 = state and Color3.new(1,1,1) or Color3.fromRGB(200,200,200)
+            end
+            table.insert(self._w._updaters, update)
+            local modObj = {Frame = row, Get = function() return state end,
+                Set = function(_, v, silent)
+                    state = (v == true)
+                    update()
+                    self._w.Modules[opts.Name] = modObj
+                    self._w:_UpdateHUD()
+                    if cb then task.spawn(cb, state) end
+                    if not silent then
+                        self._w:Notify({Title = opts.Name, Content = state and "enabled" or "disabled",
+                            Type = state and "success" or "info", Duration = 2})
+                    end
+                end}
+            row.MouseButton1Click:Connect(function()
+                state = not state
+                update()
+                self._w.Modules[opts.Name] = modObj
+                self._w:_UpdateHUD()
+                if cb then task.spawn(cb, state) end
+                self._w:Notify({Title = opts.Name, Content = state and "enabled" or "disabled",
+                    Type = state and "success" or "info", Duration = 2})
+            end)
+            row.MouseEnter:Connect(function()
+                if not state then row.BackgroundColor3 = ROW_BG_HOVER end
+            end)
+            row.MouseLeave:Connect(function()
+                if not state then row.BackgroundColor3 = ROW_BG end
+            end)
+            bindKeyMenu(row, opts.Name,
+                function() return state end,
+                function(v) modObj:Set(v) end)
+            self._w.Modules[opts.Name] = modObj
+            return modObj
+        end
+
+        function T:CreateButton(opts)
+            local cb = opts.Callback
+            local row = Instance.new("TextButton")
+            row.Name = "Btn_" .. opts.Name
+            row.Size = UDim2.new(1, 0, 0, rowH())
+            row.BackgroundColor3 = ROW_BG
+            row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
+            row.ZIndex = 11; row.Parent = page
+            row.LayoutOrder = #page:GetChildren()
+            Cr(row, 5)
+            self._w:_registerSearch(row, opts.Name, self._pageIdx)
+            local l = Instance.new("TextLabel")
+            l.Size = UDim2.new(1, -24, 1, 0)
+            l.Position = UDim2.new(0, 12, 0, 0)
+            l.BackgroundTransparency = 1; l.Text = opts.Name
+            l.TextColor3 = TXT_DIM
+            l.Font = self._w.CurrentFont; l.TextSize = 12
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.TextTruncate = Enum.TextTruncate.AtEnd
+            l.ZIndex = 12; l.Parent = row
+            table.insert(self._w._fonted, l)
+            row.MouseEnter:Connect(function() row.BackgroundColor3 = ROW_BG_HOVER end)
+            row.MouseLeave:Connect(function() row.BackgroundColor3 = ROW_BG end)
+            row.MouseButton1Click:Connect(function()
+                row.BackgroundColor3 = EnabledBg(self._w.CurrentAccent)
+                task.delay(0.12, function() row.BackgroundColor3 = ROW_BG end)
+                if cb then task.spawn(cb) end
+            end)
+            return {Frame = row}
+        end
+
+        function T:CreateSlider(opts)
+            local min, max = opts.Min or 0, opts.Max or 100
+            local val = opts.Default or min
+            local cb = opts.Callback
+            local row = Instance.new("Frame")
+            row.Name = "Sld_" .. opts.Name
+            row.Size = UDim2.new(1, 0, 0, 48)
+            row.BackgroundColor3 = ROW_BG
+            row.BorderSizePixel = 0
+            row.ZIndex = 11; row.Parent = page
+            row.LayoutOrder = #page:GetChildren()
+            Cr(row, 5)
+            self._w:_registerSearch(row, opts.Name, self._pageIdx)
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.6, -12, 0, 18)
+            lbl.Position = UDim2.new(0, 12, 0, 5)
+            lbl.BackgroundTransparency = 1; lbl.Text = opts.Name
+            lbl.TextColor3 = TXT_DIM
+            lbl.Font = self._w.CurrentFont; lbl.TextSize = 12
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.ZIndex = 12; lbl.Parent = row
+            table.insert(self._w._fonted, lbl)
+            local vlbl = Instance.new("TextLabel")
+            vlbl.Size = UDim2.new(0.4, -12, 0, 18)
+            vlbl.Position = UDim2.new(0.6, 0, 0, 5)
+            vlbl.BackgroundTransparency = 1; vlbl.Text = tostring(val)
+            vlbl.TextColor3 = self._w.CurrentAccent
+            vlbl.Font = self._w.CurrentFont; vlbl.TextSize = 12
+            vlbl.TextXAlignment = Enum.TextXAlignment.Right
+            vlbl.ZIndex = 12; vlbl.Parent = row
+            table.insert(self._w._fonted, vlbl)
+            local track = Instance.new("Frame")
+            track.Size = UDim2.new(1, -24, 0, 7)
+            track.Position = UDim2.new(0, 12, 0, 30)
+            track.BackgroundColor3 = BORDER
+            track.BorderSizePixel = 0; track.ZIndex = 12; track.Parent = row
+            Cr(track, 3)
+            local pct = (max > min) and ((val - min) / (max - min)) or 0
+            local fill = Instance.new("Frame")
+            fill.Size = UDim2.new(pct, 0, 1, 0)
+            fill.BackgroundColor3 = self._w.CurrentAccent
+            fill.BorderSizePixel = 0; fill.ZIndex = 12; fill.Parent = track
+            Cr(fill, 3)
+            local handle = Instance.new("TextButton")
+            handle.Size = UDim2.new(0, 14, 0, 14)
+            handle.Position = UDim2.new(pct, -7, 0.5, -7)
+            handle.BackgroundColor3 = self._w.CurrentAccent
+            handle.Text = ""; handle.BorderSizePixel = 0
+            handle.AutoButtonColor = false; handle.ZIndex = 13; handle.Parent = track
+            Cr(handle, 7)
+            table.insert(self._w._updaters, function()
+                fill.BackgroundColor3 = self._w.CurrentAccent
+                handle.BackgroundColor3 = self._w.CurrentAccent
+                vlbl.TextColor3 = self._w.CurrentAccent
+            end)
+            local sliding = false
+            local dsx, dsp = 0, pct
+            local function apply(nv, silent)
+                val = math.floor(math.clamp(nv, min, max) + 0.5)
+                pct = (max > min) and ((val - min) / (max - min)) or 0
+                fill.Size = UDim2.new(pct, 0, 1, 0)
+                handle.Position = UDim2.new(pct, -7, 0.5, -7)
+                vlbl.Text = tostring(val)
+                if cb and not silent then task.spawn(cb, val) end
+            end
+            handle.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                    or input.UserInputType == Enum.UserInputType.Touch then
+                    sliding = true; dsx = input.Position.X; dsp = pct
+                end
+            end)
+            track.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                    or input.UserInputType == Enum.UserInputType.Touch then
+                    local w = math.max(track.AbsoluteSize.X, 1)
+                    local rel = math.clamp((input.Position.X - track.AbsolutePosition.X) / w, 0, 1)
+                    apply(min + rel * (max - min))
+                    sliding = true; dsx = input.Position.X; dsp = rel
+                end
+            end)
+            local moveConn = UIS.InputChanged:Connect(function(input)
+                if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement
+                    or input.UserInputType == Enum.UserInputType.Touch) then
+                    local w = math.max(track.AbsoluteSize.X, 1)
+                    apply(min + math.clamp(dsp + (input.Position.X - dsx) / w, 0, 1) * (max - min))
+                end
+            end)
+            local endConn = UIS.InputEnded:Connect(function(input)
+                if sliding and (input.UserInputType == Enum.UserInputType.MouseButton1
+                    or input.UserInputType == Enum.UserInputType.Touch) then
+                    sliding = false
+                end
+            end)
+            table.insert(self._w._connections, moveConn)
+            table.insert(self._w._connections, endConn)
+            local so = {Frame = row, Get = function() return val end,
+                Set = function(_, v, silent) apply(v, silent) end}
+            self._w.Modules[opts.Name] = so
+            return so
+        end
+
+        -- Select popup (v2 replacement for dropdown columns)
+        function T:CreateDropdown(opts)
+            local options = opts.Options or {}
+            local current = nil
+            for _, v in ipairs(options) do
+                if current == nil then current = v end
+                if v == opts.Default then current = v break end
+            end
+            local cb = opts.Callback
+            local row = Instance.new("TextButton")
+            row.Name = "Sel_" .. opts.Name
+            row.Size = UDim2.new(1, 0, 0, rowH())
+            row.BackgroundColor3 = ROW_BG
+            row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
+            row.ZIndex = 11; row.Parent = page
+            row.LayoutOrder = #page:GetChildren()
+            Cr(row, 5)
+            self._w:_registerSearch(row, opts.Name, self._pageIdx)
+            local nl = Instance.new("TextLabel")
+            nl.Size = UDim2.new(0.5, -12, 1, 0)
+            nl.Position = UDim2.new(0, 12, 0, 0)
+            nl.BackgroundTransparency = 1; nl.Text = opts.Name
+            nl.TextColor3 = TXT_DIM
+            nl.Font = self._w.CurrentFont; nl.TextSize = 12
+            nl.TextXAlignment = Enum.TextXAlignment.Left
+            nl.TextTruncate = Enum.TextTruncate.AtEnd
+            nl.ZIndex = 12; nl.Parent = row
+            table.insert(self._w._fonted, nl)
+            local disp = Instance.new("TextLabel")
+            disp.Size = UDim2.new(0.5, -26, 1, 0)
+            disp.Position = UDim2.new(0.5, 0, 0, 0)
+            disp.BackgroundTransparency = 1; disp.Text = tostring(current or "")
+            disp.TextColor3 = Color3.fromRGB(190,190,205)
+            disp.Font = self._w.CurrentFont; disp.TextSize = 12
+            disp.TextXAlignment = Enum.TextXAlignment.Right
+            disp.TextTruncate = Enum.TextTruncate.AtEnd
+            disp.ZIndex = 12; disp.Parent = row
+            table.insert(self._w._fonted, disp)
+            local chev = Instance.new("TextLabel")
+            chev.Size = UDim2.new(0, 16, 1, 0)
+            chev.Position = UDim2.new(1, -20, 0, 0)
+            chev.BackgroundTransparency = 1; chev.Text = "›"
+            chev.TextColor3 = self._w.CurrentAccent
+            chev.Font = Enum.Font.GothamBold; chev.TextSize = 16
+            chev.ZIndex = 12; chev.Parent = row
+            table.insert(self._w._accentTexts, chev)
+            row.MouseEnter:Connect(function() row.BackgroundColor3 = ROW_BG_HOVER end)
+            row.MouseLeave:Connect(function() row.BackgroundColor3 = ROW_BG end)
+            local mod
+            mod = {Frame = row, Get = function() return current end,
+                Set = function(_, v)
+                    for _, o in ipairs(options) do
+                        if o == v then current = o disp.Text = tostring(o) break end
+                    end
+                end,
+                _selectTitle = opts.Name, _selectOptions = options,
+                _selectCb = cb}
+            row.MouseButton1Click:Connect(function()
+                mod._selectOptions = options
+                self._w:OpenSelector(mod)
+            end)
+            self._w.Modules[opts.Name] = mod
+            return mod
+        end
+
+        function T:CreateLabel(opts)
+            local l = Instance.new("TextLabel")
+            l.Size = UDim2.new(1, 0, 0, 18)
+            l.BackgroundTransparency = 1
+            l.Text = opts.Text or opts.Name or ""
+            l.TextColor3 = opts.Color or TXT_FAINT
+            l.Font = self._w.CurrentFont; l.TextSize = 10
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.TextWrapped = true; l.TextTruncate = Enum.TextTruncate.AtEnd
+            l.ZIndex = 11; l.Parent = page
+            l.LayoutOrder = #page:GetChildren()
+            table.insert(self._w._fonted, l)
+            if opts.Color then table.insert(self._w._accentTexts, l) end
+            return T
+        end
+
+        function T:CreateInput(opts)
+            local cb = opts.Callback
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(1, 0, 0, rowH())
+            frame.BackgroundColor3 = Color3.fromRGB(16,16,20)
+            frame.BorderSizePixel = 0
+            frame.ZIndex = 11; frame.Parent = page
+            frame.LayoutOrder = #page:GetChildren()
+            Cr(frame, 5)
+            self._w:_registerSearch(frame, opts.Name or "Input", self._pageIdx)
+            local border = Instance.new("UIStroke", frame)
+            border.Color = BORDER; border.Thickness = 1
+            local box = Instance.new("TextBox")
+            box.Size = UDim2.new(1, -24, 1, 0)
+            box.Position = UDim2.new(0, 12, 0, 0)
+            box.BackgroundTransparency = 1
+            box.PlaceholderText = opts.PlaceholderText or ""
+            box.PlaceholderColor3 = Color3.fromRGB(100,100,110)
+            box.Text = ""
+            box.TextColor3 = Color3.fromRGB(200,200,210)
+            box.Font = self._w.CurrentFont; box.TextSize = 12
+            box.TextXAlignment = Enum.TextXAlignment.Left
+            box.ClearTextOnFocus = false
+            box.ZIndex = 12; box.Parent = frame
+            table.insert(self._w._fonted, box)
+            box.Focused:Connect(function() border.Color = self._w.CurrentAccent end)
+            box.FocusLost:Connect(function()
+                border.Color = BORDER
+                if cb then task.spawn(cb, box.Text) end
+            end)
+            return {Frame = frame, Get = function() return box.Text end,
+                Set = function(_, v) box.Text = v end}
+        end
+
+        function T:CreateParagraph(opts)
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(1, 0, 0, 0)
+            frame.AutomaticSize = Enum.AutomaticSize.Y
+            frame.BackgroundColor3 = ROW_BG
+            frame.BorderSizePixel = 0
+            frame.ZIndex = 11; frame.Parent = page
+            frame.LayoutOrder = #page:GetChildren()
+            Cr(frame, 5)
+            local p = Instance.new("UIPadding", frame)
+            p.PaddingTop = UDim.new(0,8); p.PaddingLeft = UDim.new(0,12)
+            p.PaddingRight = UDim.new(0,12); p.PaddingBottom = UDim.new(0,8)
+            local tl = Instance.new("TextLabel")
+            tl.Size = UDim2.new(1, 0, 0, 16)
+            tl.BackgroundTransparency = 1; tl.Text = opts.Title or ""
+            tl.TextColor3 = self._w.CurrentAccent
+            tl.Font = self._w.CurrentFont; tl.TextSize = 12
+            tl.TextXAlignment = Enum.TextXAlignment.Left
+            tl.ZIndex = 12; tl.Parent = frame
+            table.insert(self._w._fonted, tl)
+            table.insert(self._w._accentTexts, tl)
+            local cl = Instance.new("TextLabel")
+            cl.Size = UDim2.new(1, 0, 0, 0)
+            cl.AutomaticSize = Enum.AutomaticSize.Y
+            cl.Position = UDim2.new(0, 0, 0, 20)
+            cl.BackgroundTransparency = 1; cl.Text = opts.Content or ""
+            cl.TextColor3 = TXT_DIM
+            cl.Font = self._w.CurrentFont; cl.TextSize = 11
+            cl.TextXAlignment = Enum.TextXAlignment.Left
+            cl.TextWrapped = true
+            cl.ZIndex = 12; cl.Parent = frame
+            table.insert(self._w._fonted, cl)
+            return {Frame = frame, Set = function(_, data)
+                if data.Title then tl.Text = data.Title end
+                if data.Content then cl.Text = data.Content end
+            end}
+        end
+
+        if #W._pages == 1 then W:showPage(1) end
+        W:applyResponsive()
+        return T
+    end
+
+    -- ============================================================
+    -- NOTIFY
+    -- ============================================================
+    function W:Notify(opts)
+        if typeof(opts) == "string" then opts = {Title = "NexaUI", Content = opts, Duration = 4} end
+        opts.Title = opts.Title or "NexaUI"; opts.Content = opts.Content or ""
+        opts.Duration = opts.Duration or 4; opts.Type = opts.Type or "info"
+        pcall(function()
+            local colors = W.NotifColors[opts.Type] or W.NotifColors.info
+            local nc = 0; for _ in pairs(W.ActiveNotifs) do nc = nc + 1 end
+            local sP, eP, xP
+            if W.CurrentNotifPos == "Top-Right" then
+                sP = UDim2.new(1,350,0,50+nc*44); eP = UDim2.new(1,-330,0,50+nc*44); xP = UDim2.new(1,350,0,50+nc*44)
+            elseif W.CurrentNotifPos == "Top-Left" then
+                sP = UDim2.new(0,-350,0,50+nc*44); eP = UDim2.new(0,10,0,50+nc*44); xP = UDim2.new(0,-350,0,50+nc*44)
+            elseif W.CurrentNotifPos == "Top-Center" then
+                sP = UDim2.new(0.5,0,0,-60); eP = UDim2.new(0.5,0,0,20+nc*44); xP = UDim2.new(0.5,0,0,-60)
+            else
+                sP = UDim2.new(1,350,1,-60-nc*44); eP = UDim2.new(1,-330,1,-60-nc*44); xP = UDim2.new(1,350,1,-60-nc*44)
+            end
+            local fr = Instance.new("Frame"); fr.Size = UDim2.new(0,NOTIF_W,0,NOTIF_H)
+            fr.AnchorPoint = Vector2.new(0.5,0); fr.BackgroundColor3 = colors.bg
+            fr.BorderSizePixel = 0; fr.ZIndex = 900; fr.Parent = W.ScreenGui; Cr(fr,6)
+            Instance.new("UIStroke", fr).Color = colors.bar
+            local bar = Instance.new("Frame"); bar.Size = UDim2.new(0,3,1,-8); bar.Position = UDim2.new(0,4,0,4)
+            bar.BackgroundColor3 = colors.bar; bar.BorderSizePixel = 0; bar.ZIndex = 901; bar.Parent = fr; Cr(bar,2)
+            local tt = Instance.new("TextLabel"); tt.Size = UDim2.new(1,-20,0,18); tt.Position = UDim2.new(0,14,0,2)
+            tt.BackgroundTransparency = 1; tt.Text = opts.Title; tt.TextColor3 = Color3.fromRGB(220,220,220)
+            tt.Font = W.CurrentFont; tt.TextSize = 11; tt.TextXAlignment = Enum.TextXAlignment.Left
+            tt.ZIndex = 901; tt.Parent = fr; table.insert(W._fonted, tt)
+            local ct = Instance.new("TextLabel"); ct.Size = UDim2.new(1,-20,0,22); ct.Position = UDim2.new(0,14,0,20)
+            ct.BackgroundTransparency = 1; ct.Text = opts.Content; ct.TextColor3 = Color3.fromRGB(160,160,170)
+            ct.Font = W.CurrentFont; ct.TextSize = 9; ct.TextWrapped = true
+            ct.TextXAlignment = Enum.TextXAlignment.Left; ct.ZIndex = 901; ct.Parent = fr
+            table.insert(W._fonted, ct)
+            local id = #W.ActiveNotifs + 1; W.ActiveNotifs[id] = fr
+            fr.Position = sP
+            TS:Create(fr,TweenInfo.new(0.3,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Position=eP}):Play()
+            task.delay(opts.Duration, function()
+                if W.ActiveNotifs[id] then
+                    TS:Create(fr,TweenInfo.new(0.3,Enum.EasingStyle.Quart,Enum.EasingDirection.In),{Position=xP}):Play()
+                    task.delay(0.35, function()
+                        if fr then fr:Destroy() end; W.ActiveNotifs[id] = nil
+                        local idx = 0
+                        for _,f in pairs(W.ActiveNotifs) do
+                            idx = idx + 1
+                            local rp
+                            if W.CurrentNotifPos == "Top-Right" then rp = UDim2.new(1,-330,0,50+(idx-1)*44)
+                            elseif W.CurrentNotifPos == "Top-Left" then rp = UDim2.new(0,10,0,50+(idx-1)*44)
+                            elseif W.CurrentNotifPos == "Top-Center" then rp = UDim2.new(0.5,0,0,20+(idx-1)*44)
+                            else rp = UDim2.new(1,-330,1,-60-(idx-1)*44) end
+                            TS:Create(f,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{Position=rp}):Play()
+                        end
+                    end)
+                end
+            end)
+        end)
+    end
+
+    -- ============================================================
+    -- CONFIG SYSTEM
+    -- ============================================================
+    function W:SetConfigName(name)
+        self._configName = name or "Default"
+    end
+
+    function W:SaveConfig(name)
+        name = name or self._configName
+        if not isfolder(self.ConfigFolder) then makefolder(self.ConfigFolder) end
+        local cfg = {}
+        for mn,mod in pairs(self.Modules) do if mod.Get then cfg[mn] = mod:Get() end end
+        cfg._AccentName = self.CurrentAccentName; cfg._FontName = self.CurrentFontName
+        cfg._NotifPos = self.CurrentNotifPos; cfg._Breathing = self.BreathingEnabled
+        cfg._UITransparency = self.UITransparencyVal; cfg._UIScale = self.UIScaleVal*100
+        cfg._Keybinds = self.Keybinds
+        writefile(self.ConfigFolder.."/"..name..".json", HS:JSONEncode(cfg))
+        self:Notify({Title="Config",Content="Saved: "..name,Type="success",Duration=2})
+    end
+
+    function W:LoadConfig(name)
+        name = name or self._configName
+        local path = self.ConfigFolder.."/"..name..".json"
+        if not isfile(path) then self:Notify({Title="Config",Content="Not found: "..name,Type="warning",Duration=2}) return end
+        local ok, data = pcall(function() return HS:JSONDecode(readfile(path)) end)
+        if not ok or type(data) ~= "table" then self:Notify({Title="Config",Content="Failed to load",Type="alert",Duration=2}) return end
+        for mn,mod in pairs(self.Modules) do if data[mn] ~= nil and mod.Set then mod:Set(data[mn], true) end end
+        if data._AccentName and AccentPresets[data._AccentName] then
+            self.CurrentAccentName = data._AccentName; self.CurrentAccent = AccentPresets[self.CurrentAccentName]
+            self:ApplyAccentColor(); if self.BreathingEnabled then self:StopBreathing() self:StartBreathing() end
+        end
+        if data._FontName and FontPresets[data._FontName] then self.CurrentFontName = data._FontName; self.CurrentFont = FontPresets[self.CurrentFontName]; self:ApplyFont() end
+        if data._NotifPos then self.CurrentNotifPos = data._NotifPos end
+        if data._Breathing ~= nil then self.BreathingEnabled = data._Breathing; if self.BreathingEnabled then self:StartBreathing() else self:StopBreathing() end end
+        if data._UITransparency then self.UITransparencyVal = data._UITransparency; self:ApplyUITransparency(self.UITransparencyVal/100) end
+        if data._UIScale then
+            self.UIScaleVal = data._UIScale/100
+            if self.WindowScale then self.WindowScale.Scale = self.UIScaleVal end
+        end
+        if data._Keybinds then self.Keybinds = data._Keybinds end
+        self:Notify({Title="Config",Content="Loaded: "..name,Type="success",Duration=2})
+    end
+
+    function W:Destroy()
+        self:StopBreathing()
+        if W._toggleConn then pcall(function() W._toggleConn:Disconnect() end) end
+        for _, conn in ipairs(W._connections) do pcall(function() conn:Disconnect() end) end
+        W._connections = {}
+        for _,f in pairs(self.ActiveNotifs) do if f then pcall(function() f:Destroy() end) end end
+        self.ActiveNotifs = {}
+        if self.ScreenGui then pcall(function() self.ScreenGui:Destroy() end) end
+    end
+
+    -- ============================================================
+    -- KEYBIND
+    -- ============================================================
+    W._toggleConn = UIS.InputBegan:Connect(function(input, gpe)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            W:HideContextMenu()
+        end
+        if input.KeyCode == Enum.KeyCode.Escape and W._selector.openFor then
+            W._closeSelector()
+            return
+        end
+        if input.KeyCode == W.KeybindToggle or input.KeyCode == Enum.KeyCode.Insert then
+            W:ToggleUI()
+            return
+        end
+        if gpe then return end
+        for mn, kn in pairs(W.Keybinds) do
+            if input.KeyCode == Enum.KeyCode[kn] then
+                local tm = W.Modules[mn]
+                if tm and tm.Get and tm.Set then tm:Set(not tm:Get(), false) end
+            end
+        end
+    end)
+    table.insert(W._connections, W._toggleConn)
+
+    -- ============================================================
+    -- THEME TAB (auto-appended)
+    -- ============================================================
+    local ThemeTab = W:CreateTab({Name = "Theme", Icon = "❖"})
+    ThemeTab:CreateSection("APPEARANCE")
+    do
+        local bs = W.BreathingEnabled
+        local mod
+        mod = {Get = function() return bs end,
+            Set = function(_, v)
+                bs = (v == true)
+                W.BreathingEnabled = bs
+                if bs then W:StartBreathing() else W:StopBreathing() end
+            end}
+        W.Modules["Breathing"] = mod
+        local row = Instance.new("TextButton")
+        row.Size = UDim2.new(1, 0, 0, 30)
+        row.BackgroundColor3 = bs and EnabledBg(W.CurrentAccent) or ROW_BG
+        row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
+        row.ZIndex = 11; row.Parent = ThemeTab._page
+        row.LayoutOrder = #ThemeTab._page:GetChildren()
+        Cr(row, 5)
+        W:_registerSearch(row, "Breathing Effect", #W._pages)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -52, 1, 0)
+        lbl.Position = UDim2.new(0, 12, 0, 0)
+        lbl.BackgroundTransparency = 1; lbl.Text = "Breathing Effect"
+        lbl.TextColor3 = bs and Lighten(W.CurrentAccent, 0.4) or TXT_DIM
+        lbl.Font = W.CurrentFont; lbl.TextSize = 12
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.ZIndex = 12; lbl.Parent = row
+        table.insert(W._fonted, lbl)
+        local sw = Instance.new("Frame")
+        sw.Size = UDim2.new(0, 26, 0, 13)
+        sw.Position = UDim2.new(1, -36, 0.5, -6.5)
+        sw.BackgroundColor3 = bs and W.CurrentAccent or Color3.fromRGB(45,45,50)
+        sw.BorderSizePixel = 0; sw.ZIndex = 12; sw.Parent = row
+        Cr(sw, 6)
+        local function sync()
+            row.BackgroundColor3 = bs and EnabledBg(W.CurrentAccent) or ROW_BG
+            lbl.TextColor3 = bs and Lighten(W.CurrentAccent, 0.4) or TXT_DIM
+            sw.BackgroundColor3 = bs and W.CurrentAccent or Color3.fromRGB(45,45,50)
+        end
+        table.insert(W._updaters, sync)
+        local realSet = mod.Set
+        mod.Set = function(_, v, silent)
+            realSet(_, v)
+            sync()
+            W:_UpdateHUD()
+            if not silent then
+                W:Notify({Title = "Breathing", Content = bs and "enabled" or "disabled",
+                    Type = bs and "success" or "info", Duration = 2})
+            end
+        end
+        mod.Frame = row
+        row.MouseButton1Click:Connect(function() mod:Set(not mod:Get()) W:_UpdateHUD() end)
+    end
+    local function cyclerRow(label, get, cycle)
+        local row = Instance.new("TextButton")
+        row.Size = UDim2.new(1, 0, 0, 30)
+        row.BackgroundColor3 = ROW_BG
+        row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
+        row.ZIndex = 11; row.Parent = ThemeTab._page
+        row.LayoutOrder = #ThemeTab._page:GetChildren()
+        Cr(row, 5)
+        W:_registerSearch(row, label, #W._pages)
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, -24, 1, 0)
+        l.Position = UDim2.new(0, 12, 0, 0)
+        l.BackgroundTransparency = 1; l.Text = label .. ": " .. get()
+        l.TextColor3 = TXT_DIM
+        l.Font = W.CurrentFont; l.TextSize = 12
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.ZIndex = 12; l.Parent = row
+        table.insert(W._fonted, l)
+        row.MouseEnter:Connect(function() row.BackgroundColor3 = ROW_BG_HOVER end)
+        row.MouseLeave:Connect(function() row.BackgroundColor3 = ROW_BG end)
+        row.MouseButton1Click:Connect(function()
+            cycle()
+            l.Text = label .. ": " .. get()
+        end)
+        return row
+    end
+    cyclerRow("Accent", function() return W.CurrentAccentName end, function()
+        local idx = 1
+        for i,n in ipairs(AccentNames) do if n == W.CurrentAccentName then idx = i break end end
+        idx = idx + 1; if idx > #AccentNames then idx = 1 end
+        W.CurrentAccentName = AccentNames[idx]
+        W.CurrentAccent = AccentPresets[W.CurrentAccentName]
+        W:ApplyAccentColor()
+        if W.BreathingEnabled then W:StopBreathing() W:StartBreathing() end
+        W:Notify({Title = "Theme", Content = "Accent: " .. W.CurrentAccentName, Type = "info", Duration = 2})
+    end)
+    cyclerRow("Font", function() return W.CurrentFontName end, function()
+        local idx = 1
+        for i,n in ipairs(FontNames) do if n == W.CurrentFontName then idx = i break end end
+        idx = idx + 1; if idx > #FontNames then idx = 1 end
+        W.CurrentFontName = FontNames[idx]
+        W.CurrentFont = FontPresets[W.CurrentFontName]
+        W:ApplyFont()
+        W:Notify({Title = "Theme", Content = "Font: " .. W.CurrentFontName, Type = "info", Duration = 2})
+    end)
+    cyclerRow("Notifications", function() return W.CurrentNotifPos end, function()
+        local idx = 1
+        for i,n in ipairs(NotifPositions) do if n == W.CurrentNotifPos then idx = i break end end
+        idx = (idx % #NotifPositions) + 1
+        W.CurrentNotifPos = NotifPositions[idx]
+        W:Notify({Title = "Theme", Content = "Position: " .. W.CurrentNotifPos, Type = "info", Duration = 2})
+    end)
+    ThemeTab:CreateSection("DISPLAY")
+    ThemeTab:CreateSlider({Name = "FOV", Min = 70, Max = 120, Default = 70,
+        Callback = function(v)
+            pcall(function() Workspace.CurrentCamera.FieldOfView = v end)
+        end})
+    ThemeTab:CreateSlider({Name = "UI Transparency", Min = 0, Max = 70, Default = 0,
+        Callback = function(v) W.UITransparencyVal = v W:ApplyUITransparency(v / 100) end})
+    ThemeTab:CreateSlider({Name = "UI Scale", Min = 70, Max = 150, Default = 100,
+        Callback = function(v)
+            W.UIScaleVal = v / 100
+            if W.WindowScale then W.WindowScale.Scale = W.UIScaleVal end
+        end})
+
+    -- show first tab, fit layout, intro
+    W:showPage(1)
+    W:applyResponsive()
+    W.Backdrop.Visible = true
+    task.delay(0.6, function()
+        if W.Backdrop and W.Backdrop.Parent then
+            TS:Create(W.Backdrop, TweenInfo.new(0.4), {BackgroundTransparency = 1}):Play()
+            task.delay(0.45, function()
+                if W.Backdrop and W.Backdrop.Parent and W.UIOpen then
+                    W.Backdrop.Visible = false
+                end
+            end)
+        end
+    end)
+    if W.BreathingEnabled then W:StartBreathing() end
+    W:_UpdateHUD()
+    W:Notify({Title = config.Name or "NexaUI", Content = "Loaded. Press " .. W.KeybindToggle.Name .. " to toggle.", Type = "success", Duration = 5})
+
+    NexaUI._lastWindow = W
+    return W
+end
+
+function NexaUI:Destroy()
+    if self._lastWindow then self._lastWindow:Destroy() end
+end
+
+function NexaUI:Notify(opts)
+    if self._lastWindow then self._lastWindow:Notify(opts) end
+end
+
+function NexaUI:SaveConfig(name)
+    if self._lastWindow then self._lastWindow:SaveConfig(name) end
+end
+
+function NexaUI:LoadConfig(name)
+    if self._lastWindow then self._lastWindow:LoadConfig(name) end
+end
+
+function NexaUI:SetConfigName(name)
+    if self._lastWindow then self._lastWindow:SetConfigName(name) end
+end
+
+function NexaUI:Toggle()
+    if self._lastWindow then self._lastWindow:ToggleUI() end
+end
+
+return NexaUI
