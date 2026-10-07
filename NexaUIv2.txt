@@ -20,6 +20,7 @@
         })
         local Tab = Window:CreateTab({Name = "Main", Icon = "◆"})
         Tab:CreateSection("SECTION NAME")
+        local Card = Tab:CreateCard("Farming", "🌾") -- 2-col cards, 1-col on mobile
         Tab:CreateToggle({Name = "My Toggle", Default = false, Callback = function(v) end})
         Tab:CreateSlider({Name = "My Slider", Min = 0, Max = 100, Default = 50, Callback = function(v) end})
         Tab:CreateButton({Name = "My Button", Callback = function() end})
@@ -35,13 +36,14 @@
 
 local NexaUI = {}
 NexaUI.__index = NexaUI
-NexaUI.Version = "2.0"
+NexaUI.Version = "2.1"
 
 local RS = game:GetService("RunService")
 local PS = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TS = game:GetService("TweenService")
 local HS = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
 local plr = PS.LocalPlayer
 
 local AccentPresets = {
@@ -61,7 +63,7 @@ local FontPresets = {
     SourceSans = Enum.Font.SourceSans, Arcade = Enum.Font.Arcade,
 }
 local FontNames = {"Gotham","Code","RobotoMono","Ubuntu","SourceSans","Arcade"}
-local NotifPositions = {"Top-Right","Top-Left","Top-Center","Bottom-Right"}
+local NotifPositions = {"Top-Right","Top-Left","Top-Center","Bottom-Right","Bottom-Left","Bottom-Center"}
 
 local KeyNameToCode = {}
 for _, kc in ipairs(Enum.KeyCode:GetEnumItems()) do
@@ -81,6 +83,7 @@ local function Cr(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDi
 
 local ROW_BG = Color3.fromRGB(20,20,24)
 local ROW_BG_HOVER = Color3.fromRGB(28,28,34)
+local CARD_BG = Color3.fromRGB(19,19,26)
 local BORDER = Color3.fromRGB(35,35,42)
 local TXT_DIM = Color3.fromRGB(160,160,170)
 local TXT_FAINT = Color3.fromRGB(110,110,120)
@@ -120,14 +123,19 @@ function NexaUI:CreateWindow(config)
     W.UIStrokes = {}
     W.Keybinds = {}
     W.ActiveNotifs = {}
+    W._notifOrder = {}
     W.ConfigFolder = "NexaHub_Configs"
     W._configName = "Default"
     W._connections = {}
     W._updaters = {}
     W._fonted = {}
     W._accentTexts = {}
+    W._accentStrokes = {}
+    W._breathTargets = {}
+    W._surfaces = {}
     W._sectionTitles = {}
     W._pageBtns = {}
+    W._listening = nil
     W._searchIdx = {}
     W._pages = {}
     W._activePage = 1
@@ -138,6 +146,20 @@ function NexaUI:CreateWindow(config)
         warning = {bg = Color3.fromRGB(26,22,14), bar = Color3.fromRGB(255,176,32)},
         alert = {bg = Color3.fromRGB(28,16,16), bar = Color3.fromRGB(255,76,76)},
     }
+
+    -- Surface + breathing registries. Defined early: window/sidebar/titlebar
+    -- setup below calls them while CreateWindow is still executing.
+    function W:_surface(obj, base)
+        base = base or 0
+        table.insert(W._surfaces, {obj = obj, base = base})
+        pcall(function()
+            obj.BackgroundTransparency = math.clamp(base + W.UITransparencyVal / 100, 0, 1)
+        end)
+    end
+
+    function W:_registerBreath(obj, prop)
+        table.insert(W._breathTargets, {obj = obj, prop = prop})
+    end
 
     -- ScreenGui
     W.ScreenGui = Instance.new("ScreenGui")
@@ -188,6 +210,8 @@ function NexaUI:CreateWindow(config)
     local winStroke = Instance.new("UIStroke", win)
     winStroke.Color = W.CurrentAccent; winStroke.Thickness = 1; winStroke.Transparency = 0.35
     W._accentStroke = winStroke
+    W:_surface(win)
+    W:_registerBreath(winStroke, "Color")
     local winScale = Instance.new("UIScale", win)
     winScale.Scale = W.UIScaleVal
     W.WindowScale = winScale
@@ -202,6 +226,14 @@ function NexaUI:CreateWindow(config)
     titlebar.BorderSizePixel = 0
     titlebar.ZIndex = 11
     titlebar.Parent = win
+    W:_surface(titlebar)
+    local titleEdge = Instance.new("Frame")
+    titleEdge.Size = UDim2.new(1, 0, 0, 1)
+    titleEdge.Position = UDim2.new(0, 0, 1, -1)
+    titleEdge.BackgroundColor3 = BORDER
+    titleEdge.BorderSizePixel = 0
+    titleEdge.ZIndex = 12
+    titleEdge.Parent = titlebar
     local titleIcon = Instance.new("TextLabel")
     titleIcon.Size = UDim2.new(0, 34, 1, 0)
     titleIcon.BackgroundTransparency = 1
@@ -237,7 +269,8 @@ function NexaUI:CreateWindow(config)
     Cr(searchBox, 5)
     local searchPad = Instance.new("UIPadding", searchBox)
     searchPad.PaddingLeft = UDim.new(0, 10); searchPad.PaddingRight = UDim.new(0, 10)
-    table.insert(W._fonted, searchBox)
+            table.insert(W._fonted, searchBox)
+            W:_surface(searchBox)
     W._searchBox = searchBox
     local searchStroke = Instance.new("UIStroke", searchBox)
     searchStroke.Color = BORDER; searchStroke.Thickness = 1
@@ -262,6 +295,14 @@ function NexaUI:CreateWindow(config)
     sidebar.ZIndex = 11
     sidebar.Parent = win
     W.Sidebar = sidebar
+    W:_surface(sidebar)
+    local sideEdge = Instance.new("Frame")
+    sideEdge.Size = UDim2.new(0, 1, 1, 0)
+    sideEdge.Position = UDim2.new(1, -1, 0, 0)
+    sideEdge.BackgroundColor3 = BORDER
+    sideEdge.BorderSizePixel = 0
+    sideEdge.ZIndex = 12
+    sideEdge.Parent = sidebar
     local sideList = Instance.new("UIListLayout", sidebar)
     sideList.SortOrder = Enum.SortOrder.LayoutOrder
     sideList.Padding = UDim.new(0, 4)
@@ -324,7 +365,11 @@ function NexaUI:CreateWindow(config)
     Cr(openBtn, 23)
     local openStroke = Instance.new("UIStroke", openBtn)
     openStroke.Color = W.CurrentAccent; openStroke.Thickness = 1.5
+    W:_surface(openBtn)
+    W:_registerBreath(openStroke, "Color")
     openBtn.MouseButton1Click:Connect(function() W:ToggleUI() end)
+    openBtn.MouseEnter:Connect(function() openBtn.TextColor3 = Color3.fromRGB(255,255,255) end)
+    openBtn.MouseLeave:Connect(function() openBtn.TextColor3 = W.CurrentAccent end)
     W.OpenButton = openBtn
     W._openStroke = openStroke
     -- drag the open button too
@@ -363,6 +408,7 @@ function NexaUI:CreateWindow(config)
     Cr(W.ContextMenu, 6)
     local cmStroke = Instance.new("UIStroke", W.ContextMenu)
     cmStroke.Color = W.CurrentAccent
+    W:_registerBreath(cmStroke, "Color")
     Instance.new("UIListLayout", W.ContextMenu).Padding = UDim.new(0, 2)
     local cmPad = Instance.new("UIPadding", W.ContextMenu)
     cmPad.PaddingTop = UDim.new(0,4); cmPad.PaddingBottom = UDim.new(0,4)
@@ -378,23 +424,46 @@ function NexaUI:CreateWindow(config)
     function W:ShowContextMenu(options, position)
         W:HideContextMenu()
         for _,opt in ipairs(options) do
-            local btn = Instance.new("TextButton")
-            btn.Size = UDim2.new(1, 0, 0, 26)
-            btn.BackgroundColor3 = Color3.fromRGB(24,24,36); btn.Text = "  "..opt.Label
-            btn.TextColor3 = opt.Color or Color3.fromRGB(200,200,200); btn.Font = W.CurrentFont
-            btn.TextSize = 11; btn.TextXAlignment = Enum.TextXAlignment.Left
-            btn.BorderSizePixel = 0; btn.AutoButtonColor = false; btn.ZIndex = 701
-            btn.Parent = W.ContextMenu; Cr(btn,3)
-            table.insert(W._fonted, btn)
-            btn.MouseEnter:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(40,25,55) end)
-            btn.MouseLeave:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(24,24,32) end)
-            btn.MouseButton1Click:Connect(function()
-                W:HideContextMenu()
-                if opt.Callback then task.spawn(opt.Callback) end
-            end)
+            if opt.Separator then
+                local sep = Instance.new("Frame")
+                sep.Size = UDim2.new(1, 0, 0, 1)
+                sep.BackgroundColor3 = BORDER
+                sep.BorderSizePixel = 0
+                sep.ZIndex = 701
+                sep.Parent = W.ContextMenu
+            elseif opt.Header then
+                local h = Instance.new("TextLabel")
+                h.Size = UDim2.new(1, 0, 0, 22)
+                h.BackgroundTransparency = 1
+                h.Text = tostring(opt.Label or "")
+                h.TextColor3 = opt.Color or W.CurrentAccent
+                h.Font = Enum.Font.GothamBold; h.TextSize = 11
+                h.TextXAlignment = Enum.TextXAlignment.Left
+                h.ZIndex = 701; h.Parent = W.ContextMenu
+                table.insert(W._fonted, h)
+                table.insert(W._accentTexts, h)
+            else
+                local btn = Instance.new("TextButton")
+                btn.Size = UDim2.new(1, 0, 0, 26)
+                btn.BackgroundColor3 = Color3.fromRGB(24,24,36); btn.Text = "  "..opt.Label
+                btn.TextColor3 = opt.Color or Color3.fromRGB(200,200,200); btn.Font = W.CurrentFont
+                btn.TextSize = 11; btn.TextXAlignment = Enum.TextXAlignment.Left
+                btn.BorderSizePixel = 0; btn.AutoButtonColor = false; btn.ZIndex = 701
+                btn.Parent = W.ContextMenu; Cr(btn,3)
+                table.insert(W._fonted, btn)
+                btn.MouseEnter:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(40,25,55) end)
+                btn.MouseLeave:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(24,24,32) end)
+                btn.MouseButton1Click:Connect(function()
+                    W:HideContextMenu()
+                    if opt.Callback then task.spawn(opt.Callback) end
+                end)
+            end
         end
-        W.ContextMenu.Position = UDim2.new(0, position.X, 0, position.Y)
+        W.ContextMenu.Position = UDim2.new(0, position.X, 0, position.Y + 4)
         W.ContextMenu.Visible = true
+        W:_surface(W.ContextMenu)
+        TS:Create(W.ContextMenu, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            {Position = UDim2.new(0, position.X, 0, position.Y)}):Play()
     end
 
     -- Selector popup (replaces dropdown columns): searchable centered list
@@ -406,6 +475,7 @@ function NexaUI:CreateWindow(config)
     selCatcher.Text = ""; selCatcher.AutoButtonColor = false
     selCatcher.ZIndex = 600; selCatcher.Visible = false
     selCatcher.Parent = W.ScreenGui
+    W:_surface(selCatcher, 0.5)
     local selPanel = Instance.new("Frame")
     selPanel.Name = "SelectPanel"
     selPanel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -415,8 +485,13 @@ function NexaUI:CreateWindow(config)
     selPanel.BorderSizePixel = 0; selPanel.ZIndex = 601
     selPanel.Visible = false; selPanel.Parent = W.ScreenGui
     Cr(selPanel, 8)
+    local selPop = Instance.new("UIScale", selPanel)
+    selPop.Name = "PopScale"
+    selPop.Scale = 1
     local selStroke = Instance.new("UIStroke", selPanel)
     selStroke.Color = W.CurrentAccent
+    W:_registerBreath(selStroke, "Color")
+    W:_surface(selPanel)
     local selTitle = Instance.new("TextLabel")
     selTitle.Size = UDim2.new(1, -50, 0, 30)
     selTitle.Position = UDim2.new(0, 12, 0, 6)
@@ -447,7 +522,8 @@ function NexaUI:CreateWindow(config)
     Cr(selSearch, 5)
     local selPad = Instance.new("UIPadding", selSearch)
     selPad.PaddingLeft = UDim.new(0, 10); selPad.PaddingRight = UDim.new(0, 10)
-    table.insert(W._fonted, selSearch)
+            table.insert(W._fonted, selSearch)
+            W:_surface(selSearch)
     local selScroll = Instance.new("ScrollingFrame")
     selScroll.Size = UDim2.new(1, -24, 1, -116)
     selScroll.Position = UDim2.new(0, 12, 0, 76)
@@ -499,8 +575,21 @@ function NexaUI:CreateWindow(config)
                 closeSelector()
             end)
         end
+        selCatcher.BackgroundTransparency = 1
         selCatcher.Visible = true
         selPanel.Visible = true
+        local cam = Workspace.CurrentCamera
+        local vs = cam and cam.ViewportSize or Vector2.new(1024, 640)
+        selPanel.Size = UDim2.new(0, math.min(300, vs.X * 0.88),
+            0, math.clamp(vs.Y * 0.72, 220, 380))
+        local pop = selPanel:FindFirstChild("PopScale")
+        if pop then
+            pop.Scale = 0.96
+            TS:Create(pop, TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+                {Scale = 1}):Play()
+        end
+        TS:Create(selCatcher, TweenInfo.new(0.14),
+            {BackgroundTransparency = 0.5}):Play()
         task.defer(function() selSearch:CaptureFocus() end)
     end
     selSearch:GetPropertyChangedSignal("Text"):Connect(function()
@@ -547,21 +636,39 @@ function NexaUI:CreateWindow(config)
     end
 
     -- Accent / font / transparency application
+    function W:applyTransparency()
+        local t = W.UITransparencyVal / 100
+        for _, s in ipairs(W._surfaces) do
+            if s.obj and s.obj.Parent then
+                pcall(function()
+                    s.obj.BackgroundTransparency = math.clamp(s.base + t, 0, 1)
+                end)
+            end
+        end
+    end
+
     function W:ApplyAccentColor()
         winStroke.Color = W.CurrentAccent
-        titleIcon.TextColor = W.CurrentAccent
-        openBtn.TextColor = W.CurrentAccent
+        titleIcon.TextColor3 = W.CurrentAccent
+        openBtn.TextColor3 = W.CurrentAccent
         openStroke.Color = W.CurrentAccent
         selStroke.Color = W.CurrentAccent
         cmStroke.Color = W.CurrentAccent
         for _,u in ipairs(W._updaters) do pcall(u) end
+        for _,t in ipairs(W._accentTexts) do
+            pcall(function() t.TextColor3 = W.CurrentAccent end)
+        end
+        for _,t in ipairs(W._sectionTitles) do
+            pcall(function() t.TextColor3 = W.CurrentAccent end)
+        end
         for _,b in ipairs(W._pageBtns or {}) do
             if b._active then
-                b._label.TextColor = Lighten(W.CurrentAccent, 0.4)
+                b._label.TextColor3 = Lighten(W.CurrentAccent, 0.4)
                 b._frame.BackgroundColor3 = EnabledBg(W.CurrentAccent)
                 b._bar.BackgroundColor3 = W.CurrentAccent
             end
         end
+        if W.BreathingEnabled then W:StopBreathing() W:StartBreathing() end
     end
 
     function W:ApplyFont()
@@ -576,7 +683,7 @@ function NexaUI:CreateWindow(config)
 
     function W:ApplyUITransparency(t)
         W.UITransparencyVal = (t or 0) * 100
-        if W.UIOpen then W:RefreshFade() end
+        W:applyTransparency()
     end
 
     function W:RefreshFade()
@@ -586,24 +693,34 @@ function NexaUI:CreateWindow(config)
         end
     end
 
+    -- Subtle breathing: one Heartbeat updater lerps registered accent strokes
+    -- ±7% luminance on a slow ~7s period. Cheap, no flashing.
     function W:StartBreathing()
-        if W._breathConn then pcall(function() W._breathConn:Disconnect() end) end
+        W:StopBreathing()
+        local bases = {}
+        for _, t in ipairs(W._breathTargets) do
+            if t.obj and t.obj.Parent then
+                pcall(function() bases[t] = t.obj[t.prop] end)
+            end
+        end
         W._breathConn = RS.Heartbeat:Connect(function()
-            local s = (math.sin(tick() * 2) + 1) / 2
-            local c = W.CurrentAccent
-            pcall(function()
-                W._accentStroke.Color = Color3.new(
-                    math.min(c.R + (1-c.R)*s*0.4, 1),
-                    math.min(c.G + (1-c.G)*s*0.4, 1),
-                    math.min(c.B + (1-c.B)*s*0.4, 1))
-            end)
+            local f = 1 + 0.07 * math.sin(tick() * 0.9)
+            for t, base in pairs(bases) do
+                if typeof(base) == "Color3" then
+                    pcall(function()
+                        t.obj[t.prop] = Color3.new(
+                            math.clamp(base.R * f, 0, 1),
+                            math.clamp(base.G * f, 0, 1),
+                            math.clamp(base.B * f, 0, 1))
+                    end)
+                end
+            end
         end)
     end
 
     function W:StopBreathing()
         if W._breathConn then pcall(function() W._breathConn:Disconnect() end) end
         W._breathConn = nil
-        pcall(function() W._accentStroke.Color = W.CurrentAccent end)
     end
 
     -- Open / close
@@ -655,22 +772,26 @@ function NexaUI:CreateWindow(config)
     end
 
     -- Page switching
-    W._pageBtns = {}
     function W:showPage(idx)
         W._activePage = idx
         for i,page in ipairs(W._pages) do
             page.frame.Visible = (i == idx)
+            if i == idx then
+                page.frame.Position = UDim2.new(0, 10, 0, 0)
+                TS:Create(page.frame, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    {Position = UDim2.new(0, 0, 0, 0)}):Play()
+            end
             local btn = W._pageBtns[i]
             if btn then
                 btn._active = (i == idx)
                 if i == idx then
                     btn._frame.BackgroundColor3 = EnabledBg(W.CurrentAccent)
-                    btn._label.TextColor = Lighten(W.CurrentAccent, 0.4)
+                    btn._label.TextColor3 = Lighten(W.CurrentAccent, 0.4)
                     btn._bar.BackgroundColor3 = W.CurrentAccent
                     btn._bar.Visible = true
                 else
                     btn._frame.BackgroundColor3 = Color3.fromRGB(16,16,21)
-                    btn._label.TextColor = TXT_DIM
+                    btn._label.TextColor3 = TXT_DIM
                     btn._bar.Visible = false
                 end
             end
@@ -705,6 +826,10 @@ function NexaUI:CreateWindow(config)
             end
             searchBox.Size = UDim2.new(1, -300, 0, 26)
         end
+        for _,pg in ipairs(W._pages) do
+            if pg.relayout then pcall(pg.relayout) end
+        end
+        W:layoutNotifs(false)
     end
     local viewConn = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
         task.delay(0.5, function() pcall(function() W:applyResponsive() end) end)
@@ -753,6 +878,7 @@ function NexaUI:CreateWindow(config)
         sbar.Position = UDim2.new(0, 0, 0.5, -10)
         sbar.BackgroundColor3 = W.CurrentAccent
         sbar.BorderSizePixel = 0; sbar.Visible = false
+        W:_registerBreath(sbar, "BackgroundColor3")
         sbar.ZIndex = 13; sbar.Parent = sbtn
         Cr(sbar, 2)
         local sdot = Instance.new("Frame")
@@ -765,6 +891,12 @@ function NexaUI:CreateWindow(config)
         local btnRec = {_frame = sbtn, _label = slbl, _bar = sbar, _active = false}
         table.insert(W._pageBtns, btnRec)
         sbtn.MouseButton1Click:Connect(function() W:showPage(pageIdx) end)
+        sbtn.MouseEnter:Connect(function()
+            if not btnRec._active then sbtn.BackgroundColor3 = Color3.fromRGB(23,23,29) end
+        end)
+        sbtn.MouseLeave:Connect(function()
+            if not btnRec._active then sbtn.BackgroundColor3 = Color3.fromRGB(16,16,21) end
+        end)
 
         -- Page (scrolling)
         local page = Instance.new("ScrollingFrame")
@@ -785,10 +917,156 @@ function NexaUI:CreateWindow(config)
         local layout = Instance.new("UIListLayout", page)
         layout.SortOrder = Enum.SortOrder.LayoutOrder
         layout.Padding = UDim.new(0, 6)
-        table.insert(W._pages, {frame = page, dot = sdot, name = tabConfig.Name})
+        table.insert(W._pages, {frame = page, dot = sdot, name = tabConfig.Name,
+            cards = {}, cardRows = {}, itemsSinceRow = 0})
 
         local T = {_page = page, _w = W, _pageIdx = pageIdx}
-        local rowH = function() return W.Compact and 36 or 30 end
+        T._list = page
+        local orderCtr = 0
+        local function nextOrder() orderCtr += 1 return orderCtr end
+        local pageRec = W._pages[#W._pages]
+
+        -- Card grid: 2 columns desktop, 1 column compact. Cards redistribute
+        -- on demand without rebuilding their contents.
+        local function relayoutCards()
+            local perRow = W.Compact and 1 or 2
+            for _, c in ipairs(pageRec.cards) do c.Parent = nil end
+            for _, r in ipairs(pageRec.cardRows) do r:Destroy() end
+            pageRec.cardRows = {}
+            local i = 1
+            while i <= #pageRec.cards do
+                local row = Instance.new("Frame")
+                row.Name = "CardRow"
+                row.Size = UDim2.new(1, 0, 0, 0)
+                row.AutomaticSize = Enum.AutomaticSize.Y
+                row.BackgroundTransparency = 1
+                row.BorderSizePixel = 0
+                row.Parent = page
+                local rowLayout = Instance.new("UIListLayout", row)
+                rowLayout.FillDirection = Enum.FillDirection.Horizontal
+                rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
+                rowLayout.Padding = UDim.new(0, 6)
+                rowLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+                table.insert(pageRec.cardRows, row)
+                for k = 1, perRow do
+                    local card = pageRec.cards[i]
+                    if not card then break end
+                    card.Size = (perRow == 1) and UDim2.new(1, 0, 0, 0)
+                        or UDim2.new(0.5, -3, 0, 0)
+                    card.LayoutOrder = k
+                    card.Parent = row
+                    i += 1
+                end
+            end
+            pageRec.itemsSinceRow = 0
+        end
+        pageRec.relayout = relayoutCards
+
+        function T:CreateCard(name, icon)
+            icon = icon or "▸"
+            local last = pageRec.cardRows[#pageRec.cardRows]
+            local perRow = W.Compact and 1 or 2
+            if last then
+                if #last:GetChildren() - 1 >= perRow then
+                    last = nil
+                else
+                    local maxOrd = 0
+                    for _, ch in ipairs(page:GetChildren()) do
+                        if ch:IsA("GuiObject") then
+                            maxOrd = math.max(maxOrd, ch.LayoutOrder or 0)
+                        end
+                    end
+                    if last.LayoutOrder ~= maxOrd then last = nil end
+                end
+            end
+            if not last then
+                last = Instance.new("Frame")
+                last.Name = "CardRow"
+                last.Size = UDim2.new(1, 0, 0, 0)
+                last.AutomaticSize = Enum.AutomaticSize.Y
+                last.BackgroundTransparency = 1
+                last.BorderSizePixel = 0
+                last.Parent = page
+                last.LayoutOrder = nextOrder()
+                local rowLayout = Instance.new("UIListLayout", last)
+                rowLayout.FillDirection = Enum.FillDirection.Horizontal
+                rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
+                rowLayout.Padding = UDim.new(0, 6)
+                rowLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+                table.insert(pageRec.cardRows, last)
+                pageRec.itemsSinceRow = 0
+            end
+            local card = Instance.new("Frame")
+            card.Name = "Card_" .. tostring(name)
+            card.Size = (perRow == 1) and UDim2.new(1, 0, 0, 0)
+                or UDim2.new(0.5, -3, 0, 0)
+            card.AutomaticSize = Enum.AutomaticSize.Y
+            card.BackgroundColor3 = CARD_BG
+            card.BorderSizePixel = 0
+            card.LayoutOrder = #last:GetChildren()
+            card.Parent = last
+            Cr(card, 6)
+            local cardStroke = Instance.new("UIStroke", card)
+            cardStroke.Color = BORDER
+            cardStroke.Thickness = 1
+            cardStroke.Transparency = 0.15
+            W:_surface(card)
+            local cardPad = Instance.new("UIPadding", card)
+            cardPad.PaddingTop = UDim.new(0, 10); cardPad.PaddingBottom = UDim.new(0, 10)
+            cardPad.PaddingLeft = UDim.new(0, 12); cardPad.PaddingRight = UDim.new(0, 12)
+            local cardLayout = Instance.new("UIListLayout", card)
+            cardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+            cardLayout.Padding = UDim.new(0, 6)
+            local head = Instance.new("Frame")
+            head.Size = UDim2.new(1, 0, 0, 20)
+            head.BackgroundTransparency = 1
+            head.LayoutOrder = 0
+            head.Parent = card
+            local hic = Instance.new("TextLabel")
+            hic.Size = UDim2.new(0, 20, 1, 0)
+            hic.BackgroundTransparency = 1
+            hic.Text = icon
+            hic.TextColor3 = W.CurrentAccent
+            hic.Font = W.CurrentFont; hic.TextSize = 12
+            hic.ZIndex = 12; hic.Parent = head
+            table.insert(W._fonted, hic)
+            table.insert(W._accentTexts, hic)
+            local hname = Instance.new("TextLabel")
+            hname.Size = UDim2.new(1, -22, 1, 0)
+            hname.Position = UDim2.new(0, 22, 0, 0)
+            hname.BackgroundTransparency = 1
+            hname.Text = string.upper(tostring(name))
+            hname.TextColor3 = W.CurrentAccent
+            hname.Font = Enum.Font.GothamBold; hname.TextSize = 11
+            hname.TextXAlignment = Enum.TextXAlignment.Left
+            hname.TextTruncate = Enum.TextTruncate.AtEnd
+            hname.ZIndex = 12; hname.Parent = head
+            table.insert(W._accentTexts, hname)
+            local hdiv = Instance.new("Frame")
+            hdiv.Size = UDim2.new(1, 0, 0, 1)
+            hdiv.BackgroundColor3 = BORDER
+            hdiv.BorderSizePixel = 0
+            hdiv.LayoutOrder = 1
+            hdiv.Parent = card
+            table.insert(pageRec.cards, card)
+            local C = {_list = card, _w = W, _pageIdx = pageIdx}
+            C.CreateDivider = T.CreateDivider
+            C.CreateToggle = T.CreateToggle
+            C.CreateButton = T.CreateButton
+            C.CreateSlider = T.CreateSlider
+            C.CreateDropdown = T.CreateDropdown
+            C.CreateLabel = T.CreateLabel
+            C.CreateInput = T.CreateInput
+            C.CreateParagraph = T.CreateParagraph
+            W:_registerSearch(card, name, pageIdx)
+            -- appear animation: subtle pop, no layout fight (scale only)
+            local pop = Instance.new("UIScale", card)
+            pop.Scale = 0.96
+            TS:Create(pop, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                {Scale = 1}):Play()
+            task.delay(0.2, function() pcall(function() pop:Destroy() end) end)
+            return C
+        end
 
         function T:CreateSection(name)
             local sl = Instance.new("TextLabel")
@@ -798,8 +1076,8 @@ function NexaUI:CreateWindow(config)
             sl.TextColor3 = self._w.CurrentAccent
             sl.Font = self._w.CurrentFont; sl.TextSize = 10
             sl.TextXAlignment = Enum.TextXAlignment.Left
-            sl.ZIndex = 11; sl.Parent = page
-            sl.LayoutOrder = #page:GetChildren()
+            sl.ZIndex = 11; sl.Parent = self._list
+            sl.LayoutOrder = nextOrder()
             table.insert(self._w._fonted, sl)
             table.insert(self._w._sectionTitles, sl)
             return T
@@ -809,35 +1087,29 @@ function NexaUI:CreateWindow(config)
             local d = Instance.new("Frame")
             d.Size = UDim2.new(1, 0, 0, 1)
             d.BackgroundColor3 = BORDER
-            d.BorderSizePixel = 0; d.ZIndex = 11; d.Parent = page
-            d.LayoutOrder = #page:GetChildren()
+            d.BorderSizePixel = 0; d.ZIndex = 11; d.Parent = self._list
+            d.LayoutOrder = nextOrder()
             return T
         end
 
-        local function bindKeyMenu(row, name, getState, setState)
+        local function bindKeyMenu(Wref, row, name, getState, setState)
             row.InputBegan:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton2 then
-                    local kbLabel = self._w.Keybinds[name] or "None"
-                    self._w:ShowContextMenu({
-                        {Label = name, Color = self._w.CurrentAccent},
-                        {Label = getState() and "Disable" or "Enable", Callback = function()
-                            setState(not getState())
+                    local current = Wref.Keybinds[name]
+                    Wref:ShowContextMenu({
+                        {Header = true, Label = name},
+                        {Label = "Enable", Callback = function() setState(true) end},
+                        {Label = "Disable", Callback = function() setState(false) end},
+                        {Separator = true},
+                        {Label = "Bind Key" .. (current and (" [" .. current .. "]") or ""),
+                            Color = Color3.fromRGB(200,180,100), Callback = function()
+                            Wref._listening = {module = name}
+                            Wref:Notify({Title = name, Content = "Press any key... (Esc to cancel)",
+                                Type = "info", Duration = 5})
                         end},
-                        {Label = "Bind Key ["..kbLabel.."]", Color = Color3.fromRGB(200,180,100), Callback = function()
-                            self._w:Notify({Title=name,Content="Press any key... (Esc to remove)",Type="info",Duration=3})
-                            local bindConn
-                            bindConn = UIS.InputBegan:Connect(function(input2)
-                                if input2.UserInputType == Enum.UserInputType.Keyboard then
-                                    if input2.KeyCode == Enum.KeyCode.Escape then
-                                        self._w.Keybinds[name] = nil
-                                        self._w:Notify({Title=name,Content="Keybind removed",Type="info",Duration=2})
-                                    else
-                                        self._w.Keybinds[name] = input2.KeyCode.Name
-                                        self._w:Notify({Title=name,Content="Bound to ["..input2.KeyCode.Name.."]",Type="success",Duration=2})
-                                    end
-                                    bindConn:Disconnect()
-                                end
-                            end)
+                        {Label = "Clear Keybind", Callback = function()
+                            Wref.Keybinds[name] = nil
+                            Wref:Notify({Title = name, Content = "Keybind cleared", Type = "info", Duration = 2})
                         end},
                     }, input.Position)
                 end
@@ -852,9 +1124,9 @@ function NexaUI:CreateWindow(config)
             row.Size = UDim2.new(1, 0, 0, rowH())
             row.BackgroundColor3 = state and EnabledBg(self._w.CurrentAccent) or ROW_BG
             row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
-            row.ZIndex = 11; row.Parent = page
-            row.LayoutOrder = #page:GetChildren()
+            row.ZIndex = 11; row.Parent = self._list
             Cr(row, 5)
+            self._w:_surface(row)
             self._w:_registerSearch(row, opts.Name, self._pageIdx)
             local lbl = Instance.new("TextLabel")
             lbl.Size = UDim2.new(1, -52, 1, 0)
@@ -916,7 +1188,7 @@ function NexaUI:CreateWindow(config)
             row.MouseLeave:Connect(function()
                 if not state then row.BackgroundColor3 = ROW_BG end
             end)
-            bindKeyMenu(row, opts.Name,
+            bindKeyMenu(self._w, row, opts.Name,
                 function() return state end,
                 function(v) modObj:Set(v) end)
             self._w.Modules[opts.Name] = modObj
@@ -930,9 +1202,9 @@ function NexaUI:CreateWindow(config)
             row.Size = UDim2.new(1, 0, 0, rowH())
             row.BackgroundColor3 = ROW_BG
             row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
-            row.ZIndex = 11; row.Parent = page
-            row.LayoutOrder = #page:GetChildren()
+            row.ZIndex = 11; row.Parent = self._list
             Cr(row, 5)
+            self._w:_surface(row)
             self._w:_registerSearch(row, opts.Name, self._pageIdx)
             local l = Instance.new("TextLabel")
             l.Size = UDim2.new(1, -24, 1, 0)
@@ -960,11 +1232,12 @@ function NexaUI:CreateWindow(config)
             local cb = opts.Callback
             local row = Instance.new("Frame")
             row.Name = "Sld_" .. opts.Name
+            self._w:_surface(row)
             row.Size = UDim2.new(1, 0, 0, 48)
             row.BackgroundColor3 = ROW_BG
             row.BorderSizePixel = 0
-            row.ZIndex = 11; row.Parent = page
-            row.LayoutOrder = #page:GetChildren()
+            row.ZIndex = 11; row.Parent = self._list
+            row.LayoutOrder = nextOrder()
             Cr(row, 5)
             self._w:_registerSearch(row, opts.Name, self._pageIdx)
             local lbl = Instance.new("TextLabel")
@@ -1070,9 +1343,9 @@ function NexaUI:CreateWindow(config)
             row.Size = UDim2.new(1, 0, 0, rowH())
             row.BackgroundColor3 = ROW_BG
             row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
-            row.ZIndex = 11; row.Parent = page
-            row.LayoutOrder = #page:GetChildren()
+            row.ZIndex = 11; row.Parent = self._list
             Cr(row, 5)
+            self._w:_surface(row)
             self._w:_registerSearch(row, opts.Name, self._pageIdx)
             local nl = Instance.new("TextLabel")
             nl.Size = UDim2.new(0.5, -12, 1, 0)
@@ -1130,10 +1403,9 @@ function NexaUI:CreateWindow(config)
             l.Font = self._w.CurrentFont; l.TextSize = 10
             l.TextXAlignment = Enum.TextXAlignment.Left
             l.TextWrapped = true; l.TextTruncate = Enum.TextTruncate.AtEnd
-            l.ZIndex = 11; l.Parent = page
-            l.LayoutOrder = #page:GetChildren()
+            l.ZIndex = 11; l.Parent = self._list
+            l.LayoutOrder = nextOrder()
             table.insert(self._w._fonted, l)
-            if opts.Color then table.insert(self._w._accentTexts, l) end
             return T
         end
 
@@ -1142,9 +1414,10 @@ function NexaUI:CreateWindow(config)
             local frame = Instance.new("Frame")
             frame.Size = UDim2.new(1, 0, 0, rowH())
             frame.BackgroundColor3 = Color3.fromRGB(16,16,20)
+            self._w:_surface(frame)
             frame.BorderSizePixel = 0
-            frame.ZIndex = 11; frame.Parent = page
-            frame.LayoutOrder = #page:GetChildren()
+            frame.ZIndex = 11; frame.Parent = self._list
+            frame.LayoutOrder = nextOrder()
             Cr(frame, 5)
             self._w:_registerSearch(frame, opts.Name or "Input", self._pageIdx)
             local border = Instance.new("UIStroke", frame)
@@ -1176,9 +1449,10 @@ function NexaUI:CreateWindow(config)
             frame.Size = UDim2.new(1, 0, 0, 0)
             frame.AutomaticSize = Enum.AutomaticSize.Y
             frame.BackgroundColor3 = ROW_BG
+            self._w:_surface(frame)
             frame.BorderSizePixel = 0
-            frame.ZIndex = 11; frame.Parent = page
-            frame.LayoutOrder = #page:GetChildren()
+            frame.ZIndex = 11; frame.Parent = self._list
+            frame.LayoutOrder = nextOrder()
             Cr(frame, 5)
             local p = Instance.new("UIPadding", frame)
             p.PaddingTop = UDim.new(0,8); p.PaddingLeft = UDim.new(0,12)
@@ -1217,26 +1491,62 @@ function NexaUI:CreateWindow(config)
     -- ============================================================
     -- NOTIFY
     -- ============================================================
+    -- Centralized notification layout: one function owns every slot, so
+    -- stacking, reflow, runtime position changes and resizes stay consistent.
+    local NOTIF_GAP = 8
+    function W:notifSlot(n)
+        local pos = W.CurrentNotifPos
+        if pos == "Top-Right" then
+            return UDim2.new(1, -NOTIF_W - 10, 0, 12 + n * (NOTIF_H + NOTIF_GAP))
+        elseif pos == "Top-Left" then
+            return UDim2.new(0, 10, 0, 12 + n * (NOTIF_H + NOTIF_GAP))
+        elseif pos == "Top-Center" then
+            return UDim2.new(0.5, -NOTIF_W / 2, 0, 12 + n * (NOTIF_H + NOTIF_GAP))
+        elseif pos == "Bottom-Left" then
+            return UDim2.new(0, 10, 1, -12 - (n + 1) * NOTIF_H - n * NOTIF_GAP)
+        elseif pos == "Bottom-Center" then
+            return UDim2.new(0.5, -NOTIF_W / 2, 1, -12 - (n + 1) * NOTIF_H - n * NOTIF_GAP)
+        else -- Bottom-Right
+            return UDim2.new(1, -NOTIF_W - 10, 1, -12 - (n + 1) * NOTIF_H - n * NOTIF_GAP)
+        end
+    end
+
+    local function notifIsTop()
+        local pos = W.CurrentNotifPos
+        return pos == "Top-Right" or pos == "Top-Left" or pos == "Top-Center"
+    end
+
+    function W:layoutNotifs(animate)
+        local list = {}
+        for _, f in pairs(W.ActiveNotifs) do
+            if f and f.Parent then table.insert(list, f) end
+        end
+        table.sort(list, function(a, b)
+            return (W._notifOrder[a] or 0) < (W._notifOrder[b] or 0)
+        end)
+        for i, fr in ipairs(list) do
+            local target = W:notifSlot(i - 1)
+            if animate == false then
+                fr.Position = target
+            else
+                TS:Create(fr, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    {Position = target}):Play()
+            end
+        end
+    end
+
     function W:Notify(opts)
         if typeof(opts) == "string" then opts = {Title = "NexaUI", Content = opts, Duration = 4} end
         opts.Title = opts.Title or "NexaUI"; opts.Content = opts.Content or ""
         opts.Duration = opts.Duration or 4; opts.Type = opts.Type or "info"
         pcall(function()
             local colors = W.NotifColors[opts.Type] or W.NotifColors.info
-            local nc = 0; for _ in pairs(W.ActiveNotifs) do nc = nc + 1 end
-            local sP, eP, xP
-            if W.CurrentNotifPos == "Top-Right" then
-                sP = UDim2.new(1,350,0,50+nc*44); eP = UDim2.new(1,-330,0,50+nc*44); xP = UDim2.new(1,350,0,50+nc*44)
-            elseif W.CurrentNotifPos == "Top-Left" then
-                sP = UDim2.new(0,-350,0,50+nc*44); eP = UDim2.new(0,10,0,50+nc*44); xP = UDim2.new(0,-350,0,50+nc*44)
-            elseif W.CurrentNotifPos == "Top-Center" then
-                sP = UDim2.new(0.5,0,0,-60); eP = UDim2.new(0.5,0,0,20+nc*44); xP = UDim2.new(0.5,0,0,-60)
-            else
-                sP = UDim2.new(1,350,1,-60-nc*44); eP = UDim2.new(1,-330,1,-60-nc*44); xP = UDim2.new(1,350,1,-60-nc*44)
-            end
+            local centered = W.CurrentNotifPos == "Top-Center" or W.CurrentNotifPos == "Bottom-Center"
             local fr = Instance.new("Frame"); fr.Size = UDim2.new(0,NOTIF_W,0,NOTIF_H)
-            fr.AnchorPoint = Vector2.new(0.5,0); fr.BackgroundColor3 = colors.bg
+            fr.AnchorPoint = centered and Vector2.new(0.5, 0) or Vector2.new(0, 0)
+            fr.BackgroundColor3 = colors.bg
             fr.BorderSizePixel = 0; fr.ZIndex = 900; fr.Parent = W.ScreenGui; Cr(fr,6)
+            W:_surface(fr)
             Instance.new("UIStroke", fr).Color = colors.bar
             local bar = Instance.new("Frame"); bar.Size = UDim2.new(0,3,1,-8); bar.Position = UDim2.new(0,4,0,4)
             bar.BackgroundColor3 = colors.bar; bar.BorderSizePixel = 0; bar.ZIndex = 901; bar.Parent = fr; Cr(bar,2)
@@ -1249,24 +1559,26 @@ function NexaUI:CreateWindow(config)
             ct.Font = W.CurrentFont; ct.TextSize = 9; ct.TextWrapped = true
             ct.TextXAlignment = Enum.TextXAlignment.Left; ct.ZIndex = 901; ct.Parent = fr
             table.insert(W._fonted, ct)
-            local id = #W.ActiveNotifs + 1; W.ActiveNotifs[id] = fr
-            fr.Position = sP
-            TS:Create(fr,TweenInfo.new(0.3,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Position=eP}):Play()
+            local slot = tick()
+            W._notifOrder[fr] = slot
+            -- count current actives for the entry slot, start pushed outward, then settle
+            local n = 0
+            for _ in pairs(W.ActiveNotifs) do n += 1 end
+            local target = W:notifSlot(n)
+            local push = (notifIsTop() and -1 or 1) * (NOTIF_H + 20)
+            fr.Position = target + UDim2.new(0, 0, 0, push)
+            W.ActiveNotifs[slot] = fr
+            W:layoutNotifs(true)
             task.delay(opts.Duration, function()
-                if W.ActiveNotifs[id] then
-                    TS:Create(fr,TweenInfo.new(0.3,Enum.EasingStyle.Quart,Enum.EasingDirection.In),{Position=xP}):Play()
-                    task.delay(0.35, function()
-                        if fr then fr:Destroy() end; W.ActiveNotifs[id] = nil
-                        local idx = 0
-                        for _,f in pairs(W.ActiveNotifs) do
-                            idx = idx + 1
-                            local rp
-                            if W.CurrentNotifPos == "Top-Right" then rp = UDim2.new(1,-330,0,50+(idx-1)*44)
-                            elseif W.CurrentNotifPos == "Top-Left" then rp = UDim2.new(0,10,0,50+(idx-1)*44)
-                            elseif W.CurrentNotifPos == "Top-Center" then rp = UDim2.new(0.5,0,0,20+(idx-1)*44)
-                            else rp = UDim2.new(1,-330,1,-60-(idx-1)*44) end
-                            TS:Create(f,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{Position=rp}):Play()
-                        end
+                if W.ActiveNotifs[slot] then
+                    local out = fr.Position + UDim2.new(0, 0, 0, (notifIsTop() and -1 or 1) * (NOTIF_H + 20))
+                    TS:Create(fr, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+                        {Position = out}):Play()
+                    task.delay(0.28, function()
+                        if fr then fr:Destroy() end
+                        W.ActiveNotifs[slot] = nil
+                        W._notifOrder[fr] = nil
+                        W:layoutNotifs(true)
                     end)
                 end
             end)
@@ -1305,7 +1617,7 @@ function NexaUI:CreateWindow(config)
             self:ApplyAccentColor(); if self.BreathingEnabled then self:StopBreathing() self:StartBreathing() end
         end
         if data._FontName and FontPresets[data._FontName] then self.CurrentFontName = data._FontName; self.CurrentFont = FontPresets[self.CurrentFontName]; self:ApplyFont() end
-        if data._NotifPos then self.CurrentNotifPos = data._NotifPos end
+        if data._NotifPos then self.CurrentNotifPos = data._NotifPos self:layoutNotifs(true) end
         if data._Breathing ~= nil then self.BreathingEnabled = data._Breathing; if self.BreathingEnabled then self:StartBreathing() else self:StopBreathing() end end
         if data._UITransparency then self.UITransparencyVal = data._UITransparency; self:ApplyUITransparency(self.UITransparencyVal/100) end
         if data._UIScale then
@@ -1323,6 +1635,7 @@ function NexaUI:CreateWindow(config)
         W._connections = {}
         for _,f in pairs(self.ActiveNotifs) do if f then pcall(function() f:Destroy() end) end end
         self.ActiveNotifs = {}
+        self._notifOrder = {}
         if self.ScreenGui then pcall(function() self.ScreenGui:Destroy() end) end
     end
 
@@ -1335,6 +1648,19 @@ function NexaUI:CreateWindow(config)
         end
         if input.KeyCode == Enum.KeyCode.Escape and W._selector.openFor then
             W._closeSelector()
+            return
+        end
+        if W._listening then
+            if input.UserInputType == Enum.UserInputType.Keyboard then
+                if input.KeyCode == Enum.KeyCode.Escape then
+                    W:Notify({Title = W._listening.module, Content = "Bind cancelled", Type = "info", Duration = 2})
+                else
+                    W.Keybinds[W._listening.module] = input.KeyCode.Name
+                    W:Notify({Title = W._listening.module, Content = "Bound to [" .. input.KeyCode.Name .. "]",
+                        Type = "success", Duration = 2})
+                end
+                W._listening = nil
+            end
             return
         end
         if input.KeyCode == W.KeybindToggle or input.KeyCode == Enum.KeyCode.Insert then
@@ -1408,58 +1734,27 @@ function NexaUI:CreateWindow(config)
         mod.Frame = row
         row.MouseButton1Click:Connect(function() mod:Set(not mod:Get()) W:_UpdateHUD() end)
     end
-    local function cyclerRow(label, get, cycle)
-        local row = Instance.new("TextButton")
-        row.Size = UDim2.new(1, 0, 0, 30)
-        row.BackgroundColor3 = ROW_BG
-        row.Text = ""; row.BorderSizePixel = 0; row.AutoButtonColor = false
-        row.ZIndex = 11; row.Parent = ThemeTab._page
-        row.LayoutOrder = #ThemeTab._page:GetChildren()
-        Cr(row, 5)
-        W:_registerSearch(row, label, #W._pages)
-        local l = Instance.new("TextLabel")
-        l.Size = UDim2.new(1, -24, 1, 0)
-        l.Position = UDim2.new(0, 12, 0, 0)
-        l.BackgroundTransparency = 1; l.Text = label .. ": " .. get()
-        l.TextColor3 = TXT_DIM
-        l.Font = W.CurrentFont; l.TextSize = 12
-        l.TextXAlignment = Enum.TextXAlignment.Left
-        l.ZIndex = 12; l.Parent = row
-        table.insert(W._fonted, l)
-        row.MouseEnter:Connect(function() row.BackgroundColor3 = ROW_BG_HOVER end)
-        row.MouseLeave:Connect(function() row.BackgroundColor3 = ROW_BG end)
-        row.MouseButton1Click:Connect(function()
-            cycle()
-            l.Text = label .. ": " .. get()
-        end)
-        return row
-    end
-    cyclerRow("Accent", function() return W.CurrentAccentName end, function()
-        local idx = 1
-        for i,n in ipairs(AccentNames) do if n == W.CurrentAccentName then idx = i break end end
-        idx = idx + 1; if idx > #AccentNames then idx = 1 end
-        W.CurrentAccentName = AccentNames[idx]
-        W.CurrentAccent = AccentPresets[W.CurrentAccentName]
-        W:ApplyAccentColor()
-        if W.BreathingEnabled then W:StopBreathing() W:StartBreathing() end
-        W:Notify({Title = "Theme", Content = "Accent: " .. W.CurrentAccentName, Type = "info", Duration = 2})
-    end)
-    cyclerRow("Font", function() return W.CurrentFontName end, function()
-        local idx = 1
-        for i,n in ipairs(FontNames) do if n == W.CurrentFontName then idx = i break end end
-        idx = idx + 1; if idx > #FontNames then idx = 1 end
-        W.CurrentFontName = FontNames[idx]
-        W.CurrentFont = FontPresets[W.CurrentFontName]
-        W:ApplyFont()
-        W:Notify({Title = "Theme", Content = "Font: " .. W.CurrentFontName, Type = "info", Duration = 2})
-    end)
-    cyclerRow("Notifications", function() return W.CurrentNotifPos end, function()
-        local idx = 1
-        for i,n in ipairs(NotifPositions) do if n == W.CurrentNotifPos then idx = i break end end
-        idx = (idx % #NotifPositions) + 1
-        W.CurrentNotifPos = NotifPositions[idx]
-        W:Notify({Title = "Theme", Content = "Position: " .. W.CurrentNotifPos, Type = "info", Duration = 2})
-    end)
+    ThemeTab:CreateDropdown({Name = "Accent", Options = AccentNames, Default = W.CurrentAccentName,
+        Callback = function(v)
+            W.CurrentAccentName = v
+            W.CurrentAccent = AccentPresets[v]
+            W:ApplyAccentColor()
+            if W.BreathingEnabled then W:StopBreathing() W:StartBreathing() end
+            W:Notify({Title = "Theme", Content = "Accent: " .. v, Type = "info", Duration = 2})
+        end})
+    ThemeTab:CreateDropdown({Name = "Font", Options = FontNames, Default = W.CurrentFontName,
+        Callback = function(v)
+            W.CurrentFontName = v
+            W.CurrentFont = FontPresets[v]
+            W:ApplyFont()
+            W:Notify({Title = "Theme", Content = "Font: " .. v, Type = "info", Duration = 2})
+        end})
+    ThemeTab:CreateDropdown({Name = "Notifications", Options = NotifPositions, Default = W.CurrentNotifPos,
+        Callback = function(v)
+            W.CurrentNotifPos = v
+            W:layoutNotifs()
+            W:Notify({Title = "Theme", Content = "Position: " .. v, Type = "info", Duration = 2})
+        end})
     ThemeTab:CreateSection("DISPLAY")
     ThemeTab:CreateSlider({Name = "FOV", Min = 70, Max = 120, Default = 70,
         Callback = function(v)
