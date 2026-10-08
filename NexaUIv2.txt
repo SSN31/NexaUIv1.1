@@ -1,11 +1,31 @@
 --[[
-    NexaUI v2.3
+    NexaUI v2.4
     Sidebar + pages. Searchable selector instead of dropdown columns.
     Drop-in compatible with v1 scripts: same CreateWindow/CreateTab/CreateSection/
     CreateDivider/CreateToggle/CreateButton/CreateSlider/CreateDropdown/CreateLabel/
     CreateInput/CreateParagraph, same Window.Modules Get/Set, same
     NexaUI:Notify/SaveConfig/LoadConfig/Destroy/Toggle.
-    v2.3 fixes (Oct 2026 audit 2, from Test Hub screenshot):
+    v2.4 fixes (from Test Hub screenshots + feedback):
+      - FIX right-click menu grew into a striped wall of stale "Farm Wheat"
+        headers: HideContextMenu only destroyed TextButtons, leaving headers
+        (TextLabels) and separators (Frames) to pile up forever. Now destroys all
+        menu-created entries. Added fullscreen MenuCatcher so the first click
+        outside only dismisses instead of also toggling something underneath.
+      - FIX keybinds dying after one use, two causes: (1) binds keyed by display
+        name collapsed when several modules share a name - now per-instance ids
+        (Name#seq) with legacy config migration; (2) blanket `if gpe then return`
+        dropped presses whenever the game/selected textbox also saw the key -
+        now only skips while actually typing (focused TextBox). Unknown keys
+        rejected at bind time.
+      - HUD rebuilt Minecraft-arraylist style: dark pills, 3px accent bar,
+        near-white names, longest-first, fade-in. Theme tab has a "HUD" toggle
+        (+ Window:SetHUDEnabled / Modules["HUD"]:Set) to turn it on/off.
+      - Search is now global: results panel under the search box lists matches
+        from EVERY tab with tab names; click jumps + flashes the row. Esc clears
+        search / closes menu; ToggleUI dismisses popups so none strand.
+      - Selector close button used a tofu glyph - now a plain "X" with hover;
+        hide button ASCII "-". Selector catcher is an explicit modal shield.
+    v2.3 fixes:
       - FIX sidebar tabs rendered BELOW the window. Root cause: the 1px sidebar
         edge divider shared the sidebar's UIListLayout, which lays out every
         child GuiObject. With SizeY scale 1 it ate the full height and pushed all
@@ -19,7 +39,7 @@
       - FIX/ENHANCE breathing outlines: added outer halo stroke (Thickness 3)
         + pulse now lerps Color AND Transparency (±12%, ~4s period) on window
         edge, halo, open-button ring, selector, context menu, active tab bars.
-        Old ±7% color-only pulse wasnear-invisible. Stop restores exact values.
+        Old ±7% color-only pulse was near-invisible. Stop restores exact values.
     v2.2 fixes (Oct 2026 audit):
       - FIX crash: rowH() was nil (only a local number in OpenSelector).
         Added rowHeight() helper; Toggle/Button/Dropdown/Input now size correctly.
@@ -71,7 +91,7 @@
 
 local NexaUI = {}
 NexaUI.__index = NexaUI
-NexaUI.Version = "2.3"
+NexaUI.Version = "2.4"
 
 local RS = game:GetService("RunService")
 local PS = game:GetService("Players")
@@ -185,6 +205,8 @@ function NexaUI:CreateWindow(config)
     W._loading = false
     W._notifSeq = 0
     W._themeBtnRec = nil
+    W._bidSeq = 0
+    W._byBid = {}
     W.NotifColors = {
         info = {bg = Color3.fromRGB(18,18,26), bar = Color3.fromRGB(96,165,255)},
         success = {bg = Color3.fromRGB(16,24,18), bar = Color3.fromRGB(96,216,118)},
@@ -356,7 +378,7 @@ function NexaUI:CreateWindow(config)
     hideBtn.Size = UDim2.new(0, 30, 0, 26)
     hideBtn.Position = UDim2.new(1, -40, 0, 9)
     hideBtn.BackgroundColor3 = Color3.fromRGB(22,22,28)
-    hideBtn.Text = "–"; hideBtn.TextColor3 = TXT_DIM
+    hideBtn.Text = "-"; hideBtn.TextColor3 = TXT_DIM
     hideBtn.Font = Enum.Font.GothamBold; hideBtn.TextSize = 16
     hideBtn.BorderSizePixel = 0; hideBtn.ZIndex = 12; hideBtn.Parent = titlebar
     Cr(hideBtn, 5)
@@ -503,6 +525,20 @@ function NexaUI:CreateWindow(config)
     local cmPad = Instance.new("UIPadding", W.ContextMenu)
     cmPad.PaddingTop = UDim.new(0,4); cmPad.PaddingBottom = UDim.new(0,4)
     cmPad.PaddingLeft = UDim.new(0,4); cmPad.PaddingRight = UDim.new(0,4)
+    -- Fullscreen click-catcher so the FIRST click outside only dismisses the
+    -- menu instead of also activating whatever is underneath (no more
+    -- accidental toggles when dismissing). Sits just below the menu.
+    local cmCatcher = Instance.new("TextButton")
+    cmCatcher.Name = "MenuCatcher"
+    cmCatcher.Size = UDim2.new(1, 0, 1, 0)
+    cmCatcher.BackgroundTransparency = 1
+    cmCatcher.Text = ""; cmCatcher.AutoButtonColor = false
+    cmCatcher.Active = true
+    cmCatcher.ZIndex = 699; cmCatcher.Visible = false
+    cmCatcher.Parent = W.ScreenGui
+    W._menuCatcher = cmCatcher
+    cmCatcher.MouseButton1Click:Connect(function() W:HideContextMenu() end)
+    cmCatcher.MouseButton2Click:Connect(function() W:HideContextMenu() end)
 
     function W:_pointInGui(gui, pt)
         local ok, res = pcall(function()
@@ -515,10 +551,17 @@ function NexaUI:CreateWindow(config)
     end
 
     function W:HideContextMenu()
-        if not W.ContextMenu.Visible then return end
+        if not W.ContextMenu.Visible and not (W._menuCatcher and W._menuCatcher.Visible) then return end
         W.ContextMenu.Visible = false
+        if W._menuCatcher then W._menuCatcher.Visible = false end
+        -- Destroy EVERYTHING the menu created: old code only removed TextButtons,
+        -- so headers (TextLabels) and separators (Frames) piled up forever and
+        -- the menu grew into the striped/green wall in the bug screenshot.
+        -- Layout / padding / stroke are not GuiObject menu entries; keep them.
         for _,c in pairs(W.ContextMenu:GetChildren()) do
-            if c:IsA("TextButton") then c:Destroy() end
+            if c:IsA("TextButton") or c:IsA("TextLabel") or c:IsA("Frame") then
+                c:Destroy()
+            end
         end
     end
 
@@ -565,19 +608,24 @@ function NexaUI:CreateWindow(config)
         local vs = cam and cam.ViewportSize or Vector2.new(1024, 640)
         local mx = math.clamp(position.X, 4, math.max(4, vs.X - 178))
         local my = math.clamp(position.Y, 4, math.max(4, vs.Y - 40))
+        if W._menuCatcher then W._menuCatcher.Visible = true end
         W.ContextMenu.Position = UDim2.new(0, mx, 0, my + 4)
         W.ContextMenu.Visible = true
         TS:Create(W.ContextMenu, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
             {Position = UDim2.new(0, mx, 0, my)}):Play()
     end
 
-    -- Selector popup (replaces dropdown columns): searchable centered list
+    -- Selector popup (replaces dropdown columns): searchable centered list.
+    -- The catcher is a true modal shield: fullscreen, above the whole window,
+    -- below the panel. While open, no click can fall through to toggles,
+    -- sliders, tabs or the search box behind it; clicking it just closes.
     local selCatcher = Instance.new("TextButton")
     selCatcher.Name = "SelectCatcher"
     selCatcher.Size = UDim2.new(1, 0, 1, 0)
     selCatcher.BackgroundColor3 = Color3.new(0,0,0)
     selCatcher.BackgroundTransparency = 0.5
     selCatcher.Text = ""; selCatcher.AutoButtonColor = false
+    selCatcher.Active = true
     selCatcher.ZIndex = 600; selCatcher.Visible = false
     selCatcher.Parent = W.ScreenGui
     W:_surface(selCatcher, 0.5)
@@ -610,9 +658,15 @@ function NexaUI:CreateWindow(config)
     selClose.Size = UDim2.new(0, 26, 0, 26)
     selClose.Position = UDim2.new(1, -32, 0, 6)
     selClose.BackgroundTransparency = 1
-    selClose.Text = "✕"; selClose.TextColor3 = TXT_DIM
+    selClose.Text = "X"; selClose.TextColor3 = TXT_DIM
     selClose.Font = Enum.Font.GothamBold; selClose.TextSize = 14
     selClose.ZIndex = 602; selClose.Parent = selPanel
+    selClose.MouseEnter:Connect(function()
+        selClose.TextColor3 = Color3.fromRGB(255,255,255)
+    end)
+    selClose.MouseLeave:Connect(function()
+        selClose.TextColor3 = TXT_DIM
+    end)
     local selSearch = Instance.new("TextBox")
     selSearch.Size = UDim2.new(1, -24, 0, 28)
     selSearch.Position = UDim2.new(0, 12, 0, 40)
@@ -751,32 +805,82 @@ function NexaUI:CreateWindow(config)
     local HUD_IGNORED = {
         Breathing = true, Accent = true, Font = true, Notifications = true,
         FOV = true, ["UI Transparency"] = true, ["UI Scale"] = true,
+        HUD = true,
     }
+    W.HUDEnabled = true
 
+    function W:SetHUDEnabled(v)
+        local m = self.Modules and self.Modules["HUD"]
+        if m and m.Set then
+            m:Set(v and true or false)
+        else
+            self.HUDEnabled = (v == true)
+            self:_UpdateHUD()
+        end
+    end
+
+    -- Arraylist HUD (Minecraft-client style): one dark pill per enabled module,
+    -- 3px accent bar on the left, near-white name, longest names on top, with a
+    -- quick fade/slide-in so toggles feel alive instead of blinking.
     function W:_UpdateHUD()
-        for _,c in pairs(W.HUDList:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
-        local shown = 0
+        for _,c in pairs(W.HUDList:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+        if not W.HUDEnabled then
+            W.HUDFrame.Visible = false
+            return
+        end
+        W.HUDFrame.Visible = true
+        local items = {}
         for name,mod in pairs(W.Modules) do
             if not HUD_IGNORED[name] and mod.Get then
                 local ok, v = pcall(function() return mod:Get() end)
                 if ok and v == true then
-                    shown += 1
-                    local l = Instance.new("TextLabel")
-                    l.Size = UDim2.new(0, 200, 0, 16)
-                    l.BackgroundColor3 = Color3.fromRGB(14,14,18)
-                    l.BackgroundTransparency = 0.3
-                    l.Text = "  " .. name
-                    l.TextColor3 = W.CurrentAccent
-                    l.Font = W.CurrentFont; l.TextSize = 10
-                    l.TextXAlignment = Enum.TextXAlignment.Left
-                    l.BorderSizePixel = 0; l.ZIndex = 5; l.Parent = W.HUDList
-                    Cr(l, 3)
-                    table.insert(W._fonted, l)
+                    table.insert(items, {name = name})
                 end
             end
         end
-        -- Keep the frame alive but empty when nothing is enabled.
-        W.HUDFrame.Visible = true
+        -- Longest first, like classic arraylists.
+        table.sort(items, function(a, b) return #a.name > #b.name end)
+        for i, it in ipairs(items) do
+            local pill = Instance.new("Frame")
+            pill.Name = "Pill"
+            pill.Size = UDim2.new(0, 200, 0, 18)
+            pill.BackgroundColor3 = Color3.fromRGB(13,13,18)
+            pill.BackgroundTransparency = 1
+            pill.BorderSizePixel = 0
+            pill.ZIndex = 5; pill.LayoutOrder = i; pill.Parent = W.HUDList
+            Cr(pill, 4)
+            local bar = Instance.new("Frame")
+            bar.Name = "Bar"
+            bar.Size = UDim2.new(0, 3, 1, 0)
+            bar.BackgroundColor3 = W.CurrentAccent
+            bar.BackgroundTransparency = 1
+            bar.BorderSizePixel = 0
+            bar.ZIndex = 6; bar.Parent = pill
+            Cr(bar, 2)
+            local l = Instance.new("TextLabel")
+            l.Size = UDim2.new(1, -14, 1, 0)
+            l.Position = UDim2.new(0, 10, 0, 0)
+            l.BackgroundTransparency = 1
+            l.Text = it.name
+            l.TextColor3 = Color3.fromRGB(232,232,240)
+            l.TextTransparency = 1
+            l.Font = W.CurrentFont; l.TextSize = 11
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.TextTruncate = Enum.TextTruncate.AtEnd
+            l.BorderSizePixel = 0; l.ZIndex = 6; l.Parent = pill
+            table.insert(W._fonted, l)
+            pcall(function()
+                TS:Create(pill, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    {BackgroundTransparency = 0.3}):Play()
+                TS:Create(bar, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    {BackgroundTransparency = 0}):Play()
+                TS:Create(l, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    {TextTransparency = 0}):Play()
+            end)
+            pill.BackgroundTransparency = 0.3
+            bar.BackgroundTransparency = 0
+            l.TextTransparency = 0
+        end
     end
 
     -- Accent / font / transparency application
@@ -821,11 +925,14 @@ function NexaUI:CreateWindow(config)
                 pcall(function() pg.dot.BackgroundColor3 = W.CurrentAccent end)
             end
         end
-        -- HUD entries use accent for text.
+        -- HUD pills keep white text; only their accent bars follow the theme.
         if W.HUDList then
             for _,c in pairs(W.HUDList:GetChildren()) do
-                if c:IsA("TextLabel") then
-                    pcall(function() c.TextColor3 = W.CurrentAccent end)
+                if c:IsA("Frame") then
+                    local bar = c:FindFirstChild("Bar")
+                    if bar then
+                        pcall(function() bar.BackgroundColor3 = W.CurrentAccent end)
+                    end
                 end
             end
         end
@@ -928,9 +1035,14 @@ function NexaUI:CreateWindow(config)
         end
     end
 
-    -- Open / close
+    -- Open / close (always dismisses popups first so the selector / menu can
+    -- never be left stranded on screen while the window is hidden)
     function W:ToggleUI()
         if W.ToggleAnimating then return end
+        pcall(function() W:HideContextMenu() end)
+        if W._selector and W._selector.openFor then
+            pcall(function() W._closeSelector() end)
+        end
         W.ToggleAnimating = true
         W.UIOpen = not W.UIOpen
         if W.UIOpen then
@@ -951,6 +1063,11 @@ function NexaUI:CreateWindow(config)
                 end
                 W.ToggleAnimating = false
             end)
+            pcall(function()
+                if W._searchPanel and searchBox.Text ~= "" then
+                    W:_refreshSearchResults()
+                end
+            end)
         else
             TS:Create(W.Backdrop, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {BackgroundTransparency = 1}):Play()
             task.delay(0.32, function()
@@ -959,6 +1076,9 @@ function NexaUI:CreateWindow(config)
                     W.Backdrop.Visible = false
                     openBtn.Visible = true
                     W.ToggleAnimating = false
+                    pcall(function()
+                        if W._searchPanel then W._searchPanel.Visible = false end
+                    end)
                 end
             end)
         end
@@ -997,12 +1117,153 @@ function NexaUI:CreateWindow(config)
             end
             if page.dot then page.dot.Visible = has and (i ~= W._activePage) end
         end
+        pcall(function() W:_refreshSearchResults() end)
     end
     searchBox:GetPropertyChangedSignal("Text"):Connect(applySearch)
     W._applySearch = applySearch
 
     function W:_registerSearch(row, name, pageIdx)
         table.insert(W._searchIdx, {row = row, name = tostring(name), page = pageIdx})
+    end
+
+    -- Global search results: the titlebar search spans EVERY tab, not just the
+    -- active one. While the query is non-empty a floating panel under the search
+    -- box lists each matching module/card with its tab name; clicking a result
+    -- jumps to that tab and flashes the row. (The old dots-only hint stays too.)
+    local searchPanel = Instance.new("Frame")
+    searchPanel.Name = "SearchResults"
+    searchPanel.Size = UDim2.new(0, 240, 0, 0)
+    searchPanel.BackgroundColor3 = Color3.fromRGB(16,16,22)
+    searchPanel.BorderSizePixel = 0
+    searchPanel.ZIndex = 550
+    searchPanel.Visible = false
+    searchPanel.Parent = W.ScreenGui
+    Cr(searchPanel, 6)
+    local searchPanelStroke = Instance.new("UIStroke", searchPanel)
+    searchPanelStroke.Color = W.CurrentAccent
+    searchPanelStroke.Thickness = 1
+    searchPanelStroke.Transparency = 0.4
+    W:_registerBreath(searchPanelStroke, "Color")
+    local searchScroll = Instance.new("ScrollingFrame")
+    searchScroll.Name = "List"
+    searchScroll.Size = UDim2.new(1, -8, 1, -8)
+    searchScroll.Position = UDim2.new(0, 4, 0, 4)
+    searchScroll.BackgroundTransparency = 1
+    searchScroll.BorderSizePixel = 0
+    searchScroll.ScrollBarThickness = 3
+    searchScroll.ScrollBarImageColor3 = Color3.fromRGB(60,60,70)
+    searchScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    searchScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    searchScroll.ZIndex = 551
+    searchScroll.Parent = searchPanel
+    local searchScrollLayout = Instance.new("UIListLayout", searchScroll)
+    searchScrollLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    searchScrollLayout.Padding = UDim.new(0, 4)
+    W._searchPanel = searchPanel
+    W._searchScroll = searchScroll
+
+    local function flashRow(row)
+        if not (row and row.Parent) then return end
+        pcall(function()
+            local ok, orig = pcall(function() return row.BackgroundTransparency end)
+            if not ok or typeof(orig) ~= "number" then return end
+            if orig >= 1 then return end
+            TS:Create(row, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                {BackgroundTransparency = math.clamp(orig + 0.5, 0, 1)}):Play()
+            task.delay(0.16, function()
+                if row and row.Parent then
+                    pcall(function()
+                        TS:Create(row, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                            {BackgroundTransparency = orig}):Play()
+                    end)
+                end
+            end)
+        end)
+    end
+    W._flashRow = flashRow
+
+    function W:_refreshSearchResults()
+        for _,b in pairs(searchScroll:GetChildren()) do
+            if b:IsA("TextButton") or b:IsA("TextLabel") then b:Destroy() end
+        end
+        local q = searchBox.Text:lower()
+        if q == "" then
+            searchPanel.Visible = false
+            return
+        end
+        local hits = {}
+        for _,entry in ipairs(W._searchIdx) do
+            if entry.row and entry.row.Parent
+                and entry.name:lower():find(q, 1, true) ~= nil then
+                table.insert(hits, entry)
+                if #hits >= 30 then break end
+            end
+        end
+        if #hits == 0 then
+            searchPanel.Visible = false
+            return
+        end
+        for i,entry in ipairs(hits) do
+            local tabName = (W._pages[entry.page] and W._pages[entry.page].name)
+                or ("Tab " .. tostring(entry.page))
+            local rb = Instance.new("TextButton")
+            rb.Size = UDim2.new(1, -4, 0, 26)
+            rb.BackgroundColor3 = ROW_BG
+            rb.Text = ""
+            rb.BorderSizePixel = 0; rb.AutoButtonColor = false
+            rb.ZIndex = 552; rb.LayoutOrder = i; rb.Parent = searchScroll
+            Cr(rb, 4)
+            local nm = Instance.new("TextLabel")
+            nm.Size = UDim2.new(0.6, 0, 1, 0)
+            nm.Position = UDim2.new(0, 10, 0, 0)
+            nm.BackgroundTransparency = 1
+            nm.Text = entry.name
+            nm.TextColor3 = Color3.fromRGB(215,215,225)
+            nm.Font = W.CurrentFont; nm.TextSize = 12
+            nm.TextXAlignment = Enum.TextXAlignment.Left
+            nm.TextTruncate = Enum.TextTruncate.AtEnd
+            nm.ZIndex = 553; nm.Parent = rb
+            table.insert(W._fonted, nm)
+            local tb = Instance.new("TextLabel")
+            tb.Size = UDim2.new(0.4, -10, 1, 0)
+            tb.Position = UDim2.new(0.6, 0, 0, 0)
+            tb.BackgroundTransparency = 1
+            tb.Text = tabName
+            tb.TextColor3 = TXT_FAINT
+            tb.Font = W.CurrentFont; tb.TextSize = 11
+            tb.TextXAlignment = Enum.TextXAlignment.Right
+            tb.TextTruncate = Enum.TextTruncate.AtEnd
+            tb.ZIndex = 553; tb.Parent = rb
+            table.insert(W._fonted, tb)
+            rb.MouseEnter:Connect(function()
+                pcall(function()
+                    TS:Create(rb, TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                        {BackgroundColor3 = ROW_BG_HOVER}):Play()
+                end)
+            end)
+            rb.MouseLeave:Connect(function()
+                pcall(function()
+                    TS:Create(rb, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                        {BackgroundColor3 = ROW_BG}):Play()
+                end)
+                rb.BackgroundColor3 = ROW_BG
+            end)
+            rb.MouseButton1Click:Connect(function()
+                W:showPage(entry.page)
+                searchBox.Text = ""
+                task.defer(function() flashRow(entry.row) end)
+            end)
+        end
+        -- Dock under the search box; up to 8 rows tall, then it scrolls.
+        pcall(function()
+            local ap = searchBox.AbsolutePosition
+            local asz = searchBox.AbsoluteSize
+            local w = math.max(asz.X, 200)
+            local h = math.min(#hits, 8) * 30 + 8
+            searchPanel.Position = UDim2.new(0, ap.X, 0, ap.Y + asz.Y + 6)
+            searchPanel.Size = UDim2.new(0, w, 0, h)
+        end)
+        searchPanel.Visible = true
     end
 
     -- Page switching (animated tab highlight + page slide)
@@ -1079,6 +1340,12 @@ function NexaUI:CreateWindow(config)
             if pg.relayout then pcall(pg.relayout) end
         end
         W:layoutNotifs(false)
+        -- Keep the global search results docked under the search box on resize.
+        pcall(function()
+            if W._searchPanel and W._searchPanel.Visible then
+                W:_refreshSearchResults()
+            end
+        end)
     end
     local function hookResponsive()
         pcall(function() W:applyResponsive() end)
@@ -1428,24 +1695,27 @@ function NexaUI:CreateWindow(config)
             return self
         end
 
-        local function bindKeyMenu(Wref, row, name, getState, setState)
+        -- Keybinds are keyed by per-instance id (Name#seq), NOT by display name:
+        -- duplicate module names (e.g. five "Farm Wheat" toggles) each get their
+        -- own binding instead of all collapsing onto the last-created instance.
+        local function bindKeyMenu(Wref, row, bid, dispName, getState, setState)
             row.InputBegan:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton2 then
-                    local current = Wref.Keybinds[name]
+                    local current = Wref.Keybinds[bid]
                     Wref:ShowContextMenu({
-                        {Header = true, Label = name},
+                        {Header = true, Label = dispName},
                         {Label = "Enable", Callback = function() setState(true) end},
                         {Label = "Disable", Callback = function() setState(false) end},
                         {Separator = true},
                         {Label = "Bind Key" .. (current and (" [" .. current .. "]") or ""),
                             Color = Color3.fromRGB(200,180,100), Callback = function()
-                            Wref._listening = {module = name}
-                            Wref:Notify({Title = name, Content = "Press any key... (Esc to cancel)",
+                            Wref._listening = {bid = bid, module = dispName}
+                            Wref:Notify({Title = dispName, Content = "Press any key... (Esc to cancel)",
                                 Type = "info", Duration = 5})
                         end},
                         {Label = "Clear Keybind", Callback = function()
-                            Wref.Keybinds[name] = nil
-                            Wref:Notify({Title = name, Content = "Keybind cleared", Type = "info", Duration = 2})
+                            Wref.Keybinds[bid] = nil
+                            Wref:Notify({Title = dispName, Content = "Keybind cleared", Type = "info", Duration = 2})
                         end},
                     }, input.Position)
                 end
@@ -1518,7 +1788,10 @@ function NexaUI:CreateWindow(config)
                 end
             end
             table.insert(self._w._updaters, update)
+            self._w._bidSeq += 1
+            local bid = tostring(opts.Name) .. "#" .. tostring(self._w._bidSeq)
             local modObj = {Frame = row, Get = function() return state end,
+                _bid = bid,
                 Set = function(_, v, silent)
                     state = (v == true)
                     update()
@@ -1557,10 +1830,11 @@ function NexaUI:CreateWindow(config)
                     row.BackgroundColor3 = ROW_BG
                 end
             end)
-            bindKeyMenu(self._w, row, opts.Name,
+            bindKeyMenu(self._w, row, bid, opts.Name,
                 function() return state end,
                 function(v) modObj:Set(v) end)
             self._w.Modules[opts.Name] = modObj
+            self._w._byBid[bid] = modObj
             return modObj
         end
 
@@ -2093,7 +2367,23 @@ function NexaUI:CreateWindow(config)
             if self.HUDScale then self.HUDScale.Scale = self.UIScaleVal end
         end
         -- FOV has no separate _FOV field; its slider already re-applied via Set cb above.
-        if data._Keybinds and type(data._Keybinds) == "table" then self.Keybinds = data._Keybinds end
+        if data._Keybinds and type(data._Keybinds) == "table" then
+            self.Keybinds = {}
+            for k, v in pairs(data._Keybinds) do
+                if typeof(v) == "string" and typeof(k) == "string" then
+                    if k:find("#", 1, true) then
+                        self.Keybinds[k] = v
+                    else
+                        -- Legacy config (bound by display name): migrate onto this
+                        -- session's instance id so the bind survives the upgrade.
+                        local m = self.Modules[k]
+                        if m and m._bid then
+                            self.Keybinds[m._bid] = v
+                        end
+                    end
+                end
+            end
+        end
         self:Notify({Title="Config",Content="Loaded: "..name,Type="success",Duration=2})
     end
 
@@ -2138,8 +2428,9 @@ function NexaUI:CreateWindow(config)
             if input.UserInputType == Enum.UserInputType.Keyboard then
                 if input.KeyCode == Enum.KeyCode.Escape then
                     W:Notify({Title = W._listening.module, Content = "Bind cancelled", Type = "info", Duration = 2})
-                else
-                    W.Keybinds[W._listening.module] = input.KeyCode.Name
+                elseif input.KeyCode ~= Enum.KeyCode.Unknown then
+                    -- Keyed by instance id so duplicate display names don't collide.
+                    W.Keybinds[W._listening.bid or W._listening.module] = input.KeyCode.Name
                     W:Notify({Title = W._listening.module, Content = "Bound to [" .. input.KeyCode.Name .. "]",
                         Type = "success", Duration = 2})
                 end
@@ -2147,20 +2438,46 @@ function NexaUI:CreateWindow(config)
             end
             return
         end
+        if input.KeyCode == Enum.KeyCode.Escape and W.ContextMenu.Visible then
+            W:HideContextMenu()
+            return
+        end
+        if input.KeyCode == Enum.KeyCode.Escape and W._searchBox
+            and W._searchBox.Text ~= "" then
+            local focused = false
+            pcall(function() focused = W._searchBox:IsFocused() end)
+            if focused then
+                W._searchBox.Text = ""
+                return
+            end
+        end
         if input.KeyCode == W.KeybindToggle or input.KeyCode == Enum.KeyCode.Insert then
             W:ToggleUI()
             return
         end
-        if gpe then return end
-        for mn, kn in pairs(W.Keybinds) do
-            if typeof(kn) == "string" then
-                local ok, code = pcall(function() return Enum.KeyCode[kn] end)
-                if ok and code and input.KeyCode == code then
-                    local tm = W.Modules[mn]
-                    if tm and tm.Get and tm.Set then
-                        local okg, cur = pcall(function() return tm:Get() end)
-                        if okg and typeof(cur) == "boolean" then
-                            pcall(function() tm:Set(not cur, false) end)
+        -- Bound keys must keep working while the user plays: only skip when they
+        -- are actively typing in a textbox (search / input / chat). The old
+        -- blanket `if gpe then return end` killed binds whenever the game had
+        -- also seen the key (selector search focus, game actions), which is why
+        -- a fresh bind appeared to work once and then die.
+        if input.UserInputType == Enum.UserInputType.Keyboard
+            and input.KeyCode ~= Enum.KeyCode.Unknown then
+            local typing = false
+            pcall(function()
+                typing = UIS:GetFocusedTextBox() ~= nil
+            end)
+            if not typing then
+                for bid, kn in pairs(W.Keybinds) do
+                    if typeof(kn) == "string" then
+                        local ok, code = pcall(function() return Enum.KeyCode[kn] end)
+                        if ok and code and input.KeyCode == code then
+                            local tm = (W._byBid and W._byBid[bid]) or W.Modules[bid]
+                            if tm and tm.Get and tm.Set then
+                                local okg, cur = pcall(function() return tm:Get() end)
+                                if okg and typeof(cur) == "boolean" then
+                                    pcall(function() tm:Set(not cur, false) end)
+                                end
+                            end
                         end
                     end
                 end
@@ -2233,6 +2550,12 @@ function NexaUI:CreateWindow(config)
         mod.Frame = row
         row.MouseButton1Click:Connect(function() mod:Set(not mod:Get()) W:_UpdateHUD() end)
     end
+    -- Arraylist on/off (uses the standard toggle builder so it saves to config,
+    -- shows in search, and stays in sequence with the other Theme rows).
+    ThemeTab:CreateToggle({Name = "HUD", Default = true, Callback = function(v)
+        W.HUDEnabled = (v == true)
+        W:_UpdateHUD()
+    end})
     ThemeTab:CreateDropdown({Name = "Accent", Options = AccentNames, Default = W.CurrentAccentName,
         Callback = function(v)
             if not AccentPresets[v] then return end
